@@ -121,7 +121,6 @@ if user_input:
         # --- [데이터 강제 추출 (누락 방지)] ---
         price_fmt = f"{currency}{current_price:,.0f}" if is_korean else f"{currency}{current_price:,.2f}"
         
-        # 1. 시가총액 (한국 주식은 KRX 데이터에서 확실하게 가져옴)
         krx_df = load_krx_data()
         mkt_cap_str = "N/A"
         if is_korean:
@@ -134,14 +133,12 @@ if user_input:
             mkt_cap = info.get('marketCap', 0)
             if mkt_cap: mkt_cap_str = f"${mkt_cap / 1_000_000_000:.2f}B"
 
-        # 2. 52주 최고/최저 (차트 데이터에서 직접 계산)
-        last_252_days = df.tail(252) # 1년은 약 252 거래일
+        last_252_days = df.tail(252)
         high52_val = last_252_days['High'].max()
         low52_val = last_252_days['Low'].min()
         high52 = f"{currency}{int(high52_val):,}" if is_korean else f"{currency}{high52_val:.2f}"
         low52 = f"{currency}{int(low52_val):,}" if is_korean else f"{currency}{low52_val:.2f}"
 
-        # 3. 배당수익률
         div_val = info.get('dividendYield')
         div_yield = f"{div_val*100:.2f}%" if div_val else "0.00%"
         
@@ -207,12 +204,19 @@ if user_input:
                 fig.update_layout(xaxis_rangeslider_visible=False, xaxis2_rangeslider_visible=False, xaxis3_rangeslider_visible=False, height=600, margin=dict(l=0,r=0,t=30,b=0), template='plotly_dark', showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
                 st.plotly_chart(fig, use_container_width=True)
 
+        # ==========================================
+        # ★ 탭 2: 에러 해결된 재무제표 ★
+        # ==========================================
         with tab2:
             st.subheader(f"🏢 {company_display_name} 연간 실적 추이")
             try:
                 fin = stock.financials.T.sort_index() if not stock.financials.empty else pd.DataFrame()
                 if not fin.empty and 'Total Revenue' in fin.columns and 'Net Income' in fin.columns:
-                    # 단위 축소 및 포맷팅 (한국: 억 원 / 미국: 백만 달러)
+                    
+                    # 0으로 나누기 에러 방지를 위해 결측치를 0으로 채움
+                    fin['Total Revenue'] = fin['Total Revenue'].fillna(0)
+                    fin['Net Income'] = fin['Net Income'].fillna(0)
+
                     if is_korean:
                         fin['Rev_Disp'] = fin['Total Revenue'] / 100000000
                         fin['Net_Disp'] = fin['Net Income'] / 100000000
@@ -224,26 +228,30 @@ if user_input:
 
                     years = fin.index.strftime('%Y년')
                     
-                    # 1. 보기 편한 차트 (숫자 텍스트 추가)
                     fin_fig = go.Figure()
-                    fin_fig.add_trace(go.Bar(x=years, y=fin['Rev_Disp'], name='매출액', marker_color='#29b6f6', text=fin['Rev_Disp'].apply(lambda x: f"{x:,.0f}"), textposition='auto'))
-                    fin_fig.add_trace(go.Bar(x=years, y=fin['Net_Disp'], name='당기순이익', marker_color='#66bb6a', text=fin['Net_Disp'].apply(lambda x: f"{x:,.0f}"), textposition='auto'))
+                    fin_fig.add_trace(go.Bar(x=years, y=fin['Rev_Disp'], name='매출액', marker_color='#29b6f6', text=fin['Rev_Disp'].apply(lambda x: f"{x:,.0f}" if x != 0 else ""), textposition='auto'))
+                    fin_fig.add_trace(go.Bar(x=years, y=fin['Net_Disp'], name='당기순이익', marker_color='#66bb6a', text=fin['Net_Disp'].apply(lambda x: f"{x:,.0f}" if x != 0 else ""), textposition='auto'))
                     fin_fig.update_layout(barmode='group', template='plotly_dark', height=450, yaxis_title=unit_str)
                     st.plotly_chart(fin_fig, use_container_width=True)
                     
-                    # 2. 깔끔한 표 제공
                     st.markdown(f"##### 📊 상세 재무 데이터 ({unit_str})")
                     disp_df = fin[['Total Revenue', 'Net Income']].copy()
                     disp_df.index = years
                     disp_df.columns = ['매출액', '당기순이익']
-                    if is_korean:
-                        disp_df = disp_df.applymap(lambda x: f"₩{int(x):,}" if pd.notnull(x) else "N/A")
-                    else:
-                        disp_df = disp_df.applymap(lambda x: f"${int(x):,}" if pd.notnull(x) else "N/A")
+                    
+                    # 최신 pandas에서 경고가 나지 않도록 apply 대신 개별 포맷팅 적용
+                    def format_money(val):
+                        if pd.isna(val) or val == 0: return "N/A"
+                        return f"₩{int(val):,}" if is_korean else f"${int(val):,}"
+                        
+                    disp_df['매출액'] = disp_df['매출액'].apply(format_money)
+                    disp_df['당기순이익'] = disp_df['당기순이익'].apply(format_money)
+                    
                     st.dataframe(disp_df.T, use_container_width=True)
                     
                 else: st.info("재무 데이터를 제공하지 않습니다.")
-            except: st.warning("오류가 발생했습니다.")
+            except Exception as e: 
+                st.warning(f"재무 데이터를 불러오는 중 오류가 발생했습니다. ({e})")
 
         with tab3:
             st.subheader(f"📈 시장 벤치마크 수익률 비교")
