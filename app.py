@@ -74,7 +74,7 @@ def resolve_ticker(user_input):
     return query, query
 
 # --- [2. 메인 화면 - 개별 종목 분석] ---
-user_input = st.text_input("회사명 또는 종목코드를 입력하세요 (예: SK하이닉스, 삼성전자, 테슬라)", "한화에어로스페이스")
+user_input = st.text_input("회사명 또는 종목코드를 입력하세요 (예: SK하이닉스, 삼성전자, 테슬라)", "SK하이닉스")
 
 if user_input:
     ticker_code, company_display_name = resolve_ticker(user_input)
@@ -138,21 +138,17 @@ if user_input:
         low52_val = last_252_days['Low'].min()
         high52 = f"{currency}{int(high52_val):,}" if is_korean else f"{currency}{high52_val:.2f}"
         low52 = f"{currency}{int(low52_val):,}" if is_korean else f"{currency}{low52_val:.2f}"
-
-        div_val = info.get('dividendYield')
-        div_yield = f"{div_val*100:.2f}%" if div_val else "0.00%"
         
         latest_rsi = df['RSI'].iloc[-1]
 
-        # 상단 요약 바
+        # 상단 요약 바 (배당수익률 제거, 5열로 조정)
         st.success(f"🔍 **{company_display_name}** (`{ticker_code}`) 개별 분석")
-        c1, c2, c3, c4, c5, c6 = st.columns(6)
+        c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("현재 주가", price_fmt)
         c2.metric("시가총액", mkt_cap_str)
         c3.metric("52주 최고", high52)
         c4.metric("52주 최저", low52)
-        c5.metric("배당수익률", div_yield)
-        c6.metric("RSI (과열도)", f"{latest_rsi:.1f}", "과매수 ⚠️" if latest_rsi >= 70 else "과매도 📉" if latest_rsi <= 30 else "중립")
+        c5.metric("RSI (과열도)", f"{latest_rsi:.1f}", "과매수 ⚠️" if latest_rsi >= 70 else "과매도 📉" if latest_rsi <= 30 else "중립")
         st.divider()
 
         # --- [탭 레이아웃] ---
@@ -204,16 +200,12 @@ if user_input:
                 fig.update_layout(xaxis_rangeslider_visible=False, xaxis2_rangeslider_visible=False, xaxis3_rangeslider_visible=False, height=600, margin=dict(l=0,r=0,t=30,b=0), template='plotly_dark', showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
                 st.plotly_chart(fig, use_container_width=True)
 
-        # ==========================================
-        # ★ 탭 2: 에러 해결된 재무제표 ★
-        # ==========================================
         with tab2:
             st.subheader(f"🏢 {company_display_name} 연간 실적 추이")
             try:
                 fin = stock.financials.T.sort_index() if not stock.financials.empty else pd.DataFrame()
                 if not fin.empty and 'Total Revenue' in fin.columns and 'Net Income' in fin.columns:
                     
-                    # 0으로 나누기 에러 방지를 위해 결측치를 0으로 채움
                     fin['Total Revenue'] = fin['Total Revenue'].fillna(0)
                     fin['Net Income'] = fin['Net Income'].fillna(0)
 
@@ -239,7 +231,6 @@ if user_input:
                     disp_df.index = years
                     disp_df.columns = ['매출액', '당기순이익']
                     
-                    # 최신 pandas에서 경고가 나지 않도록 apply 대신 개별 포맷팅 적용
                     def format_money(val):
                         if pd.isna(val) or val == 0: return "N/A"
                         return f"₩{int(val):,}" if is_korean else f"${int(val):,}"
