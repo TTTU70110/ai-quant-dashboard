@@ -18,7 +18,7 @@ import urllib.parse
 import requests
 import xml.etree.ElementTree as ET
 
-st.set_page_config(layout="wide", page_title="AI 퀀트 투자 대시보드 Pro")
+st.set_page_config(layout="wide", page_title="투자 도우미 프로그램")
 
 # --- [UI 디자인 강제 수정] ---
 st.markdown("""
@@ -28,9 +28,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🤖 AI 투자 보조 프로그램")
+st.title("🤖 투자 도우미 프로그램")
 
-# ★ 투자 경고문 추가 ★
 st.warning("⚠️ **[투자 유의사항]** 본 프로그램이 제공하는 AI 예측, 차트, 실시간 뉴스 감성 분석 등의 모든 정보는 과거 데이터를 기반으로 한 **참고용 보조 자료**입니다. 미래의 수익을 절대 보장하지 않으며, **모든 투자의 최종 판단과 그에 따른 책임은 전적으로 투자자 본인에게 있습니다.**")
 
 # --- [1. 공통 데이터 엔진] ---
@@ -119,17 +118,33 @@ if user_input:
         else:
             up_prob, test_acc = 50.0, 0.0
 
-        # 요약 정보 포맷
-        mkt_cap = info.get('marketCap', 0)
-        mkt_cap_str = (f"{mkt_cap / 1e12:.2f}조" if is_korean else f"${mkt_cap / 1e9:.2f}B") if mkt_cap else "N/A"
+        # --- [데이터 강제 추출 (누락 방지)] ---
         price_fmt = f"{currency}{current_price:,.0f}" if is_korean else f"{currency}{current_price:,.2f}"
         
-        def safe_get(key, default="N/A", fmt=None):
-            val = info.get(key); return (fmt(val) if fmt else str(val)) if val else default
+        # 1. 시가총액 (한국 주식은 KRX 데이터에서 확실하게 가져옴)
+        krx_df = load_krx_data()
+        mkt_cap_str = "N/A"
+        if is_korean:
+            code_only = ticker_code.split('.')[0]
+            match = krx_df[krx_df['Code'] == code_only]
+            if not match.empty:
+                mkt_cap = match.iloc[0]['Marcap']
+                mkt_cap_str = f"{mkt_cap / 1_000_000_000_000:.2f}조 원"
+        else:
+            mkt_cap = info.get('marketCap', 0)
+            if mkt_cap: mkt_cap_str = f"${mkt_cap / 1_000_000_000:.2f}B"
 
-        div_yield = safe_get('dividendYield', "0.00%", lambda x: f"{x*100:.2f}%")
-        high52 = safe_get('fiftyTwoWeekHigh', "N/A", lambda x: f"{currency}{x:,.0f}" if is_korean else f"${x:,.2f}")
-        low52 = safe_get('fiftyTwoWeekLow', "N/A", lambda x: f"{currency}{x:,.0f}" if is_korean else f"${x:,.2f}")
+        # 2. 52주 최고/최저 (차트 데이터에서 직접 계산)
+        last_252_days = df.tail(252) # 1년은 약 252 거래일
+        high52_val = last_252_days['High'].max()
+        low52_val = last_252_days['Low'].min()
+        high52 = f"{currency}{int(high52_val):,}" if is_korean else f"{currency}{high52_val:.2f}"
+        low52 = f"{currency}{int(low52_val):,}" if is_korean else f"{currency}{low52_val:.2f}"
+
+        # 3. 배당수익률
+        div_val = info.get('dividendYield')
+        div_yield = f"{div_val*100:.2f}%" if div_val else "0.00%"
+        
         latest_rsi = df['RSI'].iloc[-1]
 
         # 상단 요약 바
@@ -174,8 +189,6 @@ if user_input:
 
             with col2:
                 st.subheader("📊 정밀 분석 차트")
-                
-                # ★ 여기에 차트 선 설명(범례) 캡션을 부활시켰습니다! ★
                 st.caption("📌 **차트 범례**: 🟥/🟩 캔들(주가) | 🟧 **20일선(단기)** | 🔷 **60일선(중기)** | ⚪ **볼린저 밴드** | 🟣 **MACD** | 🔴 **시그널** | 📊 **거래량**")
                 
                 chart_df = df.tail(120).copy()
@@ -183,7 +196,6 @@ if user_input:
                 colors = ['#26a69a' if r['Close'] >= r['Open'] else '#ef5350' for _, r in chart_df.iterrows()]
                 
                 fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.55, 0.2, 0.25])
-                
                 fig.add_trace(go.Candlestick(x=d_str, open=chart_df['Open'], high=chart_df['High'], low=chart_df['Low'], close=chart_df['Close'], name='주가(Candle)', increasing_line_color='#26a69a', decreasing_line_color='#ef5350'), row=1, col=1)
                 fig.add_trace(go.Scatter(x=d_str, y=chart_df['Upper_Band'], line=dict(color='rgba(255,255,255,0.3)', dash='dash'), name='볼린저 상한'), row=1, col=1)
                 fig.add_trace(go.Scatter(x=d_str, y=chart_df['Lower_Band'], line=dict(color='rgba(255,255,255,0.3)', dash='dash'), name='볼린저 하한'), row=1, col=1)
@@ -192,14 +204,7 @@ if user_input:
                 fig.add_trace(go.Scatter(x=d_str, y=chart_df['MACD'], line=dict(color='#ab47bc'), name='MACD'), row=2, col=1)
                 fig.add_trace(go.Scatter(x=d_str, y=chart_df['Signal'], line=dict(color='#ff7043', dash='dot'), name='시그널(Signal)'), row=2, col=1)
                 fig.add_trace(go.Bar(x=d_str, y=chart_df['Volume'], marker_color=colors, name='거래량'), row=3, col=1)
-                
-                # ★ showlegend=True로 변경하여 차트 상단에 클릭 가능한 뱃지 추가 ★
-                fig.update_layout(
-                    xaxis_rangeslider_visible=False, xaxis2_rangeslider_visible=False, xaxis3_rangeslider_visible=False, 
-                    height=600, margin=dict(l=0,r=0,t=30,b=0), template='plotly_dark', 
-                    showlegend=True, 
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-                )
+                fig.update_layout(xaxis_rangeslider_visible=False, xaxis2_rangeslider_visible=False, xaxis3_rangeslider_visible=False, height=600, margin=dict(l=0,r=0,t=30,b=0), template='plotly_dark', showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
                 st.plotly_chart(fig, use_container_width=True)
 
         with tab2:
@@ -207,11 +212,36 @@ if user_input:
             try:
                 fin = stock.financials.T.sort_index() if not stock.financials.empty else pd.DataFrame()
                 if not fin.empty and 'Total Revenue' in fin.columns and 'Net Income' in fin.columns:
+                    # 단위 축소 및 포맷팅 (한국: 억 원 / 미국: 백만 달러)
+                    if is_korean:
+                        fin['Rev_Disp'] = fin['Total Revenue'] / 100000000
+                        fin['Net_Disp'] = fin['Net Income'] / 100000000
+                        unit_str = "단위: 억 원"
+                    else:
+                        fin['Rev_Disp'] = fin['Total Revenue'] / 1000000
+                        fin['Net_Disp'] = fin['Net Income'] / 1000000
+                        unit_str = "단위: 백만 달러 (M)"
+
+                    years = fin.index.strftime('%Y년')
+                    
+                    # 1. 보기 편한 차트 (숫자 텍스트 추가)
                     fin_fig = go.Figure()
-                    fin_fig.add_trace(go.Bar(x=fin.index.strftime('%Y-%m-%d'), y=fin['Total Revenue'], name='매출액', marker_color='#29b6f6'))
-                    fin_fig.add_trace(go.Bar(x=fin.index.strftime('%Y-%m-%d'), y=fin['Net Income'], name='당기순이익', marker_color='#66bb6a'))
-                    fin_fig.update_layout(barmode='group', template='plotly_dark', height=500)
+                    fin_fig.add_trace(go.Bar(x=years, y=fin['Rev_Disp'], name='매출액', marker_color='#29b6f6', text=fin['Rev_Disp'].apply(lambda x: f"{x:,.0f}"), textposition='auto'))
+                    fin_fig.add_trace(go.Bar(x=years, y=fin['Net_Disp'], name='당기순이익', marker_color='#66bb6a', text=fin['Net_Disp'].apply(lambda x: f"{x:,.0f}"), textposition='auto'))
+                    fin_fig.update_layout(barmode='group', template='plotly_dark', height=450, yaxis_title=unit_str)
                     st.plotly_chart(fin_fig, use_container_width=True)
+                    
+                    # 2. 깔끔한 표 제공
+                    st.markdown(f"##### 📊 상세 재무 데이터 ({unit_str})")
+                    disp_df = fin[['Total Revenue', 'Net Income']].copy()
+                    disp_df.index = years
+                    disp_df.columns = ['매출액', '당기순이익']
+                    if is_korean:
+                        disp_df = disp_df.applymap(lambda x: f"₩{int(x):,}" if pd.notnull(x) else "N/A")
+                    else:
+                        disp_df = disp_df.applymap(lambda x: f"${int(x):,}" if pd.notnull(x) else "N/A")
+                    st.dataframe(disp_df.T, use_container_width=True)
+                    
                 else: st.info("재무 데이터를 제공하지 않습니다.")
             except: st.warning("오류가 발생했습니다.")
 
