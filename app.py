@@ -74,7 +74,7 @@ def resolve_ticker(user_input):
     return query, query
 
 # --- [2. 메인 화면 - 개별 종목 분석] ---
-user_input = st.text_input("회사명 또는 종목코드를 입력하세요 (예: SK하이닉스, 삼성전자, 테슬라)", "한화에어로스페이스")
+user_input = st.text_input("회사명 또는 종목코드를 입력하세요 (예: SK하이닉스, 삼성전자, 테슬라)", "SK하이닉스")
 
 if user_input:
     ticker_code, company_display_name = resolve_ticker(user_input)
@@ -177,4 +177,169 @@ if user_input:
                         for art in articles:
                             res = ai_model(art['title'])[0]['label'].upper()
                             icon = "📈 [호재]" if res == "POSITIVE" else "📉 [악재]" if res == "NEGATIVE" else "➖ [중립]"
-                            st.markdown(f"{icon} [{
+                            st.markdown(f"{icon} [{art['title']}]({art['link']})")
+                else: st.info("뉴스를 불러오지 못했습니다.")
+
+            with col2:
+                st.subheader("📊 정밀 분석 차트")
+                st.caption("📌 **차트 범례**: 🟥/🟩 캔들(주가) | 🟧 **20일선(단기)** | 🔷 **60일선(중기)** | ⚪ **볼린저 밴드** | 🟣 **MACD** | 🔴 **시그널** | 📊 **거래량**")
+                
+                chart_df = df.tail(120).copy()
+                d_str = chart_df.index.strftime('%Y-%m-%d')
+                colors = ['#26a69a' if r['Close'] >= r['Open'] else '#ef5350' for _, r in chart_df.iterrows()]
+                
+                fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.55, 0.2, 0.25])
+                fig.add_trace(go.Candlestick(x=d_str, open=chart_df['Open'], high=chart_df['High'], low=chart_df['Low'], close=chart_df['Close'], name='주가(Candle)', increasing_line_color='#26a69a', decreasing_line_color='#ef5350'), row=1, col=1)
+                fig.add_trace(go.Scatter(x=d_str, y=chart_df['Upper_Band'], line=dict(color='rgba(255,255,255,0.3)', dash='dash'), name='볼린저 상한'), row=1, col=1)
+                fig.add_trace(go.Scatter(x=d_str, y=chart_df['Lower_Band'], line=dict(color='rgba(255,255,255,0.3)', dash='dash'), name='볼린저 하한'), row=1, col=1)
+                fig.add_trace(go.Scatter(x=d_str, y=chart_df['MA20'], line=dict(color='orange'), name='20일선'), row=1, col=1)
+                fig.add_trace(go.Scatter(x=d_str, y=chart_df['MA60'], line=dict(color='#00bfff'), name='60일선'), row=1, col=1)
+                fig.add_trace(go.Scatter(x=d_str, y=chart_df['MACD'], line=dict(color='#ab47bc'), name='MACD'), row=2, col=1)
+                fig.add_trace(go.Scatter(x=d_str, y=chart_df['Signal'], line=dict(color='#ff7043', dash='dot'), name='시그널(Signal)'), row=2, col=1)
+                fig.add_trace(go.Bar(x=d_str, y=chart_df['Volume'], marker_color=colors, name='거래량'), row=3, col=1)
+                fig.update_layout(xaxis_rangeslider_visible=False, xaxis2_rangeslider_visible=False, xaxis3_rangeslider_visible=False, height=600, margin=dict(l=0,r=0,t=30,b=0), template='plotly_dark', showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+                st.plotly_chart(fig, use_container_width=True)
+
+        with tab2:
+            st.subheader(f"🏢 {company_display_name} 연간 실적 추이")
+            try:
+                fin = stock.financials.T.sort_index() if not stock.financials.empty else pd.DataFrame()
+                if not fin.empty and 'Total Revenue' in fin.columns and 'Net Income' in fin.columns:
+                    
+                    fin['Total Revenue'] = fin['Total Revenue'].fillna(0)
+                    fin['Net Income'] = fin['Net Income'].fillna(0)
+
+                    if is_korean:
+                        fin['Rev_Disp'] = fin['Total Revenue'] / 100000000
+                        fin['Net_Disp'] = fin['Net Income'] / 100000000
+                        unit_str = "단위: 억 원"
+                    else:
+                        fin['Rev_Disp'] = fin['Total Revenue'] / 1000000
+                        fin['Net_Disp'] = fin['Net Income'] / 1000000
+                        unit_str = "단위: 백만 달러 (M)"
+
+                    years = fin.index.strftime('%Y년')
+                    
+                    fin_fig = go.Figure()
+                    fin_fig.add_trace(go.Bar(x=years, y=fin['Rev_Disp'], name='매출액', marker_color='#29b6f6', text=fin['Rev_Disp'].apply(lambda x: f"{x:,.0f}" if x != 0 else ""), textposition='auto'))
+                    fin_fig.add_trace(go.Bar(x=years, y=fin['Net_Disp'], name='당기순이익', marker_color='#66bb6a', text=fin['Net_Disp'].apply(lambda x: f"{x:,.0f}" if x != 0 else ""), textposition='auto'))
+                    fin_fig.update_layout(barmode='group', template='plotly_dark', height=450, yaxis_title=unit_str)
+                    st.plotly_chart(fin_fig, use_container_width=True)
+                    
+                    st.markdown(f"##### 📊 상세 재무 데이터 ({unit_str})")
+                    disp_df = fin[['Total Revenue', 'Net Income']].copy()
+                    disp_df.index = years
+                    disp_df.columns = ['매출액', '당기순이익']
+                    
+                    def format_money(val):
+                        if pd.isna(val) or val == 0: return "N/A"
+                        return f"₩{int(val):,}" if is_korean else f"${int(val):,}"
+                        
+                    disp_df['매출액'] = disp_df['매출액'].apply(format_money)
+                    disp_df['당기순이익'] = disp_df['당기순이익'].apply(format_money)
+                    
+                    st.dataframe(disp_df.T, use_container_width=True)
+                    
+                else: st.info("재무 데이터를 제공하지 않습니다.")
+            except Exception as e: 
+                st.warning(f"재무 데이터를 불러오는 중 오류가 발생했습니다. ({e})")
+
+        with tab3:
+            st.subheader(f"📈 시장 벤치마크 수익률 비교")
+            try:
+                b_tick, b_name = ("^KS11", "코스피") if is_korean else ("SPY", "S&P 500")
+                bench_df = yf.Ticker(b_tick).history(period="2y")
+                c_dates = df.index.intersection(bench_df.index)
+                comp_fig = go.Figure()
+                comp_fig.add_trace(go.Scatter(x=c_dates.strftime('%Y-%m-%d'), y=(df.loc[c_dates,'Close']/df.loc[c_dates,'Close'].iloc[0]-1)*100, name=company_display_name, line=dict(color='#ffca28')))
+                comp_fig.add_trace(go.Scatter(x=c_dates.strftime('%Y-%m-%d'), y=(bench_df.loc[c_dates,'Close']/bench_df.loc[c_dates,'Close'].iloc[0]-1)*100, name=b_name, line=dict(color='white', dash='dot')))
+                comp_fig.update_layout(template='plotly_dark', height=500, yaxis_title="수익률 (%)", hovermode="x unified")
+                st.plotly_chart(comp_fig, use_container_width=True)
+            except: st.warning("비교 차트를 불러올 수 없습니다.")
+
+        with tab4:
+            st.subheader("🧪 나만의 투자 전략 백테스트")
+            sc1, sc2 = st.columns(2)
+            sim_short, sim_long = sc1.slider("단기 이평선", 5, 50, 20), sc2.slider("장기 이평선", 50, 200, 60)
+            if sim_short >= sim_long: st.error("⚠️ 단기는 장기보다 작아야 합니다.")
+            else:
+                sim_df = df.copy().dropna()
+                sim_df['S'], sim_df['L'] = sim_df['Close'].rolling(sim_short).mean(), sim_df['Close'].rolling(sim_long).mean()
+                sim_df['Ret'] = np.where(sim_df['S'] > sim_df['L'], 1, 0)
+                sim_df['Ret'] = sim_df['Ret'].shift(1) * sim_df['Price_Change']
+                sim_df = sim_df.dropna()
+                strat_ret, hold_ret = (1 + sim_df['Ret']).cumprod() - 1, (1 + sim_df['Price_Change']).cumprod() - 1
+                st.markdown(f"**💡 최종 수익률**: 시뮬레이션 전략 **{strat_ret.iloc[-1]*100:.1f}%** vs 단순 보유 **{hold_ret.iloc[-1]*100:.1f}%**")
+                
+                sim_fig = go.Figure()
+                sim_fig.add_trace(go.Scatter(x=sim_df.index.strftime('%Y-%m-%d'), y=strat_ret*100, name='전략 수익률', line=dict(color='#ff4081')))
+                sim_fig.add_trace(go.Scatter(x=sim_df.index.strftime('%Y-%m-%d'), y=hold_ret*100, name='단순 보유', line=dict(color='#90caf9', dash='dot')))
+                sim_fig.update_layout(template='plotly_dark', height=450, hovermode="x unified")
+                st.plotly_chart(sim_fig, use_container_width=True)
+
+        with tab5:
+            st.subheader("🚀 시가총액 TOP 100 & 내일의 급등주 AI 스캐너")
+            st.markdown("한국거래소(KRX) 시가총액 상위 100개 종목의 실시간 데이터를 바탕으로, AI가 내일 상승 확률이 가장 높은 **TOP 10 종목**을 추출합니다.")
+            
+            krx_df = load_krx_data()
+            if 'Marcap' in krx_df.columns:
+                top100 = krx_df.sort_values(by='Marcap', ascending=False).head(100).reset_index(drop=True)
+                top100.index = top100.index + 1
+                
+                if st.button("🔍 상위 100종목 AI 스캔 시작 (약 15~20초 소요)", type="primary", use_container_width=True):
+                    progress_text = "AI가 100개 종목의 최신 차트 데이터를 분석하여 모델을 학습 중입니다..."
+                    my_bar = st.progress(0, text=progress_text)
+                    
+                    ai_results = []
+                    for i, row in top100.iterrows():
+                        code, name, market = row['Code'], row['Name'], row['Market']
+                        t_code = f"{code}{'.KQ' if 'KOSDAQ' in str(market).upper() else '.KS'}"
+                        
+                        try:
+                            hist = yf.Ticker(t_code).history(period="3mo")
+                            if len(hist) > 20:
+                                hist['MA10'] = hist['Close'].rolling(10).mean()
+                                hist['MA20'] = hist['Close'].rolling(20).mean()
+                                delta = hist['Close'].diff()
+                                rs = (delta.where(delta > 0, 0)).rolling(14).mean() / ((delta.where(delta < 0, 0)).rolling(14).mean().abs() + 1e-9)
+                                hist['RSI'] = 100 - (100 / (1 + rs))
+                                hist['Price_Change'] = hist['Close'].pct_change()
+                                hist['Volume_Change'] = hist['Volume'].pct_change()
+                                hist['Target'] = np.where(hist['Close'].shift(-1) > hist['Close'], 1, 0)
+                                
+                                ml_df2 = hist.dropna()
+                                if len(ml_df2) > 10:
+                                    X2, y2 = ml_df2[['MA10', 'MA20', 'RSI', 'Price_Change', 'Volume_Change']], ml_df2['Target']
+                                    model2 = RandomForestClassifier(n_estimators=50, random_state=42).fit(X2, y2)
+                                    prob2 = model2.predict_proba(X2.iloc[-1:])[0][1] * 100
+                                    
+                                    ai_results.append({
+                                        '종목명': name,
+                                        '상승 확률(%)': round(prob2, 1),
+                                        '현재가': f"₩{int(hist['Close'].iloc[-1]):,}",
+                                        'RSI (과열도)': round(hist['RSI'].iloc[-1], 1),
+                                    })
+                        except: pass
+                        my_bar.progress(i / 100.0, text=f"AI 분석 진행 중... [{i}/100] {name}")
+                    my_bar.empty()
+                    
+                    if ai_results:
+                        res_df = pd.DataFrame(ai_results)
+                        top10 = res_df.sort_values(by='상승 확률(%)', ascending=False).head(10).reset_index(drop=True)
+                        top10.index = top10.index + 1
+                        st.success("🎉 **AI 스캔 완료! 내일 상승 확률이 가장 높은 TOP 10 종목입니다.**")
+                        st.dataframe(top10, use_container_width=True)
+                    else: st.error("데이터 수집 중 오류가 발생했습니다.")
+                
+                st.divider()
+                st.markdown("### 🏆 한국 주식 시가총액 순위 (1위 ~ 100위)")
+                display_df = top100[['Code', 'Name', 'Close', 'ChagesRatio', 'Marcap']].copy()
+                display_df.columns = ['종목코드', '종목명', '현재가', '등락률', '시가총액']
+                display_df['현재가'] = display_df['현재가'].apply(lambda x: f"₩{int(x):,}")
+                display_df['등락률'] = display_df['등락률'].apply(lambda x: f"{x:.2f}%")
+                display_df['시가총액'] = display_df['시가총액'].apply(lambda x: f"{x / 1000000000000:.2f}조 원")
+                st.dataframe(display_df, use_container_width=True, height=600)
+            else:
+                st.warning("한국거래소(KRX) 데이터를 불러올 수 없습니다.")
+    else:
+        st.warning("데이터를 불러오지 못했습니다. 종목명이 정확한지 확인해 주세요.")
