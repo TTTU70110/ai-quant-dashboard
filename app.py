@@ -1,3 +1,4 @@
+%%writefile app.py
 import os
 try:
     import FinanceDataReader as fdr
@@ -18,7 +19,8 @@ import urllib.parse
 import requests
 import xml.etree.ElementTree as ET
 
-st.set_page_config(layout="wide", page_title="AI 퀀트 투자 대시보드 Pro")
+# 타이틀 변경
+st.set_page_config(layout="wide", page_title="투자 도우미 프로그램")
 
 # --- [UI 디자인 강제 수정] ---
 st.markdown("""
@@ -28,7 +30,11 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🤖 AI 퀀트 투자 대시보드 Pro")
+# 메인 타이틀 변경
+st.title("🤖 투자 도우미 프로그램")
+
+# ★ 투자 경고문 추가 ★
+st.warning("⚠️ **[투자 유의사항]** 본 프로그램이 제공하는 AI 예측, 차트, 실시간 뉴스 감성 분석 등의 모든 정보는 과거 데이터를 기반으로 한 **참고용 보조 자료**입니다. 미래의 수익을 절대 보장하지 않으며, **모든 투자의 최종 판단과 그에 따른 책임은 전적으로 투자자 본인에게 있습니다.**")
 
 # --- [1. 공통 데이터 엔진] ---
 @st.cache_data(ttl=3600)
@@ -171,8 +177,6 @@ if user_input:
 
             with col2:
                 st.subheader("📊 정밀 분석 차트")
-                
-                # ★ 여기에 차트 선 설명(범례) 캡션을 부활시켰습니다! ★
                 st.caption("📌 **차트 범례**: 🟥/🟩 캔들(주가) | 🟧 **20일선(단기)** | 🔷 **60일선(중기)** | ⚪ **볼린저 밴드** | 🟣 **MACD** | 🔴 **시그널** | 📊 **거래량**")
                 
                 chart_df = df.tail(120).copy()
@@ -180,7 +184,6 @@ if user_input:
                 colors = ['#26a69a' if r['Close'] >= r['Open'] else '#ef5350' for _, r in chart_df.iterrows()]
                 
                 fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.55, 0.2, 0.25])
-                
                 fig.add_trace(go.Candlestick(x=d_str, open=chart_df['Open'], high=chart_df['High'], low=chart_df['Low'], close=chart_df['Close'], name='주가(Candle)', increasing_line_color='#26a69a', decreasing_line_color='#ef5350'), row=1, col=1)
                 fig.add_trace(go.Scatter(x=d_str, y=chart_df['Upper_Band'], line=dict(color='rgba(255,255,255,0.3)', dash='dash'), name='볼린저 상한'), row=1, col=1)
                 fig.add_trace(go.Scatter(x=d_str, y=chart_df['Lower_Band'], line=dict(color='rgba(255,255,255,0.3)', dash='dash'), name='볼린저 하한'), row=1, col=1)
@@ -189,14 +192,7 @@ if user_input:
                 fig.add_trace(go.Scatter(x=d_str, y=chart_df['MACD'], line=dict(color='#ab47bc'), name='MACD'), row=2, col=1)
                 fig.add_trace(go.Scatter(x=d_str, y=chart_df['Signal'], line=dict(color='#ff7043', dash='dot'), name='시그널(Signal)'), row=2, col=1)
                 fig.add_trace(go.Bar(x=d_str, y=chart_df['Volume'], marker_color=colors, name='거래량'), row=3, col=1)
-                
-                # ★ showlegend=True로 변경하여 차트 상단에 클릭 가능한 뱃지 추가 ★
-                fig.update_layout(
-                    xaxis_rangeslider_visible=False, xaxis2_rangeslider_visible=False, xaxis3_rangeslider_visible=False, 
-                    height=600, margin=dict(l=0,r=0,t=30,b=0), template='plotly_dark', 
-                    showlegend=True, 
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-                )
+                fig.update_layout(xaxis_rangeslider_visible=False, xaxis2_rangeslider_visible=False, xaxis3_rangeslider_visible=False, height=600, margin=dict(l=0,r=0,t=30,b=0), template='plotly_dark', showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
                 st.plotly_chart(fig, use_container_width=True)
 
         with tab2:
