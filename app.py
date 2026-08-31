@@ -141,7 +141,7 @@ if user_input:
         
         latest_rsi = df['RSI'].iloc[-1]
 
-        # 상단 요약 바 (배당수익률 제거, 5열로 조정)
+        # 상단 요약 바 (배당수익률 완전 삭제, 5열로 조정)
         st.success(f"🔍 **{company_display_name}** (`{ticker_code}`) 개별 분석")
         c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("현재 주가", price_fmt)
