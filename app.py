@@ -74,7 +74,7 @@ def resolve_ticker(user_input):
     return query, query
 
 # --- [2. 메인 화면 - 개별 종목 분석] ---
-user_input = st.text_input("회사명 또는 종목코드를 입력하세요 (예: SK하이닉스, 삼성전자, 테슬라)", "SK하이닉스")
+user_input = st.text_input("회사명 또는 종목코드를 입력하세요 (예: SK하이닉스, 삼성전자, 테슬라)", "한화에어로스페이스")
 
 if user_input:
     ticker_code, company_display_name = resolve_ticker(user_input)
