@@ -38,10 +38,8 @@ def load_krx_data():
 
 @st.cache_data(ttl=3600)
 def get_stock_list():
-    """모든 주식 종목을 '종목명 (코드)' 형태로 미리 만들어둡니다."""
     try:
         krx_df = load_krx_data()
-        # 한국 주식 리스트 생성 (예: 삼성전자 (005930))
         krx_list = [f"{row['Name']} ({row['Code']})" for _, row in krx_df.iterrows()]
     except:
         krx_list = []
@@ -51,7 +49,6 @@ def get_stock_list():
         "구글 (GOOGL)", "아마존 (AMZN)", "메타 (META)"
     ]
     
-    # 맨 첫 줄은 안내 멘트
     return ["🔍 여기를 클릭하고 종목명이나 코드를 입력하세요 (예: 삼성, 에코, AAPL)"] + global_list + krx_list
 
 @st.cache_resource
@@ -135,6 +132,9 @@ def run_dashboard(ticker_code, company_display_name):
     c5.metric("RSI (과열도)", f"{latest_rsi:.1f}", "과매수 ⚠️" if latest_rsi >= 70 else "과매도 📉" if latest_rsi <= 30 else "중립")
     st.divider()
 
+    # --- [공통 차트 설정: 확대/축소 막기] ---
+    chart_config = {'displayModeBar': False, 'scrollZoom': False}
+
     # --- [탭 레이아웃] ---
     tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 차트 & 뉴스", "🏢 재무제표", "📈 시장 비교", "🧪 백테스트", "🏆 시총 TOP 100 & AI 추천"])
 
@@ -148,10 +148,20 @@ def run_dashboard(ticker_code, company_display_name):
             
             st.subheader("📰 실시간 뉴스 분석 (한국어 AI)")
             try:
-                res = requests.get(f"https://news.google.com/rss/search?q={urllib.parse.quote(company_display_name)}&hl=ko&gl=KR&ceid=KR:ko", timeout=5)
+                # ★ 뉴스 로딩 오류 해결: 크롬 브라우저로 위장하여 구글 차단 회피 ★
+                news_url = f"https://news.google.com/rss/search?q={urllib.parse.quote(company_display_name)}&hl=ko&gl=KR&ceid=KR:ko"
+                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+                res = requests.get(news_url, headers=headers, timeout=5)
                 root = ET.fromstring(res.content)
-                articles = [{'title': item.find('title').text.split(' - ')[0], 'link': item.find('link').text} for item in root.findall('.//item')[:10] if item.find('title') is not None]
-            except: articles = []
+                
+                articles = []
+                for item in root.findall('.//item')[:10]:
+                    title_tag = item.find('title')
+                    link_tag = item.find('link')
+                    if title_tag is not None and link_tag is not None:
+                        articles.append({'title': title_tag.text.split(' - ')[0], 'link': link_tag.text})
+            except:
+                articles = []
             
             if articles:
                 ai_model = load_korean_ai()
@@ -160,7 +170,7 @@ def run_dashboard(ticker_code, company_display_name):
                         res = ai_model(art['title'])[0]['label'].upper()
                         icon = "📈 [호재]" if res == "POSITIVE" else "📉 [악재]" if res == "NEGATIVE" else "➖ [중립]"
                         st.markdown(f"{icon} [{art['title']}]({art['link']})")
-            else: st.info("뉴스를 불러오지 못했습니다.")
+            else: st.info("뉴스를 일시적으로 불러오지 못했습니다. (서버 지연)")
 
         with col2:
             st.subheader("📊 정밀 분석 차트")
@@ -179,8 +189,12 @@ def run_dashboard(ticker_code, company_display_name):
             fig.add_trace(go.Scatter(x=d_str, y=chart_df['MACD'], line=dict(color='#ab47bc'), name='MACD'), row=2, col=1)
             fig.add_trace(go.Scatter(x=d_str, y=chart_df['Signal'], line=dict(color='#ff7043', dash='dot'), name='시그널(Signal)'), row=2, col=1)
             fig.add_trace(go.Bar(x=d_str, y=chart_df['Volume'], marker_color=colors, name='거래량'), row=3, col=1)
+            
+            # ★ 모바일 터치 스크롤 시 차트 멋대로 움직이는 현상 방지 (고정) ★
+            fig.update_xaxes(fixedrange=True)
+            fig.update_yaxes(fixedrange=True)
             fig.update_layout(xaxis_rangeslider_visible=False, xaxis2_rangeslider_visible=False, xaxis3_rangeslider_visible=False, height=600, margin=dict(l=0,r=0,t=30,b=0), template='plotly_dark', showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, config=chart_config)
 
     with tab2:
         st.subheader(f"🏢 {company_display_name} 연간 실적 추이")
@@ -205,8 +219,12 @@ def run_dashboard(ticker_code, company_display_name):
                 fin_fig = go.Figure()
                 fin_fig.add_trace(go.Bar(x=years, y=fin['Rev_Disp'], name='매출액', marker_color='#29b6f6', text=fin['Rev_Disp'].apply(lambda x: f"{x:,.0f}" if x != 0 else ""), textposition='auto'))
                 fin_fig.add_trace(go.Bar(x=years, y=fin['Net_Disp'], name='당기순이익', marker_color='#66bb6a', text=fin['Net_Disp'].apply(lambda x: f"{x:,.0f}" if x != 0 else ""), textposition='auto'))
+                
+                # ★ 줌 막기 ★
+                fin_fig.update_xaxes(fixedrange=True)
+                fin_fig.update_yaxes(fixedrange=True)
                 fin_fig.update_layout(barmode='group', template='plotly_dark', height=450, yaxis_title=unit_str)
-                st.plotly_chart(fin_fig, use_container_width=True)
+                st.plotly_chart(fin_fig, use_container_width=True, config=chart_config)
                 
                 st.markdown(f"##### 📊 상세 재무 데이터 ({unit_str})")
                 disp_df = fin[['Total Revenue', 'Net Income']].copy()
@@ -219,12 +237,11 @@ def run_dashboard(ticker_code, company_display_name):
                     
                 disp_df['매출액'] = disp_df['매출액'].apply(format_money)
                 disp_df['당기순이익'] = disp_df['당기순이익'].apply(format_money)
-                
                 st.dataframe(disp_df.T, use_container_width=True)
                 
             else: st.info("재무 데이터를 제공하지 않습니다.")
         except Exception as e: 
-            st.warning(f"재무 데이터를 불러오는 중 오류가 발생했습니다. ({e})")
+            st.warning("재무 데이터를 불러오는 중 오류가 발생했습니다.")
 
     with tab3:
         st.subheader(f"📈 시장 벤치마크 수익률 비교")
@@ -235,8 +252,12 @@ def run_dashboard(ticker_code, company_display_name):
             comp_fig = go.Figure()
             comp_fig.add_trace(go.Scatter(x=c_dates.strftime('%Y-%m-%d'), y=(df.loc[c_dates,'Close']/df.loc[c_dates,'Close'].iloc[0]-1)*100, name=company_display_name, line=dict(color='#ffca28')))
             comp_fig.add_trace(go.Scatter(x=c_dates.strftime('%Y-%m-%d'), y=(bench_df.loc[c_dates,'Close']/bench_df.loc[c_dates,'Close'].iloc[0]-1)*100, name=b_name, line=dict(color='white', dash='dot')))
+            
+            # ★ 줌 막기 ★
+            comp_fig.update_xaxes(fixedrange=True)
+            comp_fig.update_yaxes(fixedrange=True)
             comp_fig.update_layout(template='plotly_dark', height=500, yaxis_title="수익률 (%)", hovermode="x unified")
-            st.plotly_chart(comp_fig, use_container_width=True)
+            st.plotly_chart(comp_fig, use_container_width=True, config=chart_config)
         except: st.warning("비교 차트를 불러올 수 없습니다.")
 
     with tab4:
@@ -256,8 +277,12 @@ def run_dashboard(ticker_code, company_display_name):
             sim_fig = go.Figure()
             sim_fig.add_trace(go.Scatter(x=sim_df.index.strftime('%Y-%m-%d'), y=strat_ret*100, name='전략 수익률', line=dict(color='#ff4081')))
             sim_fig.add_trace(go.Scatter(x=sim_df.index.strftime('%Y-%m-%d'), y=hold_ret*100, name='단순 보유', line=dict(color='#90caf9', dash='dot')))
+            
+            # ★ 줌 막기 ★
+            sim_fig.update_xaxes(fixedrange=True)
+            sim_fig.update_yaxes(fixedrange=True)
             sim_fig.update_layout(template='plotly_dark', height=450, hovermode="x unified")
-            st.plotly_chart(sim_fig, use_container_width=True)
+            st.plotly_chart(sim_fig, use_container_width=True, config=chart_config)
 
     with tab5:
         st.subheader("🚀 시가총액 TOP 100 & 내일의 급등주 AI 스캐너")
@@ -327,23 +352,19 @@ def run_dashboard(ticker_code, company_display_name):
 # --- [3. 메인 실행 (실시간 자동완성 검색창)] ---
 stock_options = get_stock_list()
 
-# selectbox를 사용하여 타이핑할 때마다 리스트가 필터링 되도록 합니다.
 selected_stock = st.selectbox(
     label="검색창",
     options=stock_options,
     index=0,
-    label_visibility="collapsed" # 검색창 위에 글자 숨기기
+    label_visibility="collapsed"
 )
 
-# 첫 번째 안내 멘트가 아닌, 진짜 종목이 선택되었을 때만 분석 실행
 if selected_stock and selected_stock != stock_options[0]:
-    # 선택된 글자에서 이름과 코드 분리 (예: "삼성전자 (005930)" -> 이름: 삼성전자, 코드: 005930)
     company_name = selected_stock.split(" (")[0]
     stock_code = selected_stock.split(" (")[1].replace(")", "")
     
-    # 한국 주식인지 미국 주식인지 판별하여 티커(Ticker) 완성
     if stock_code.isalpha():
-        final_ticker = stock_code # AAPL, TSLA 등 미국 주식
+        final_ticker = stock_code
     else:
         krx_df = load_krx_data()
         market_info = krx_df[krx_df['Code'] == stock_code]
@@ -352,7 +373,6 @@ if selected_stock and selected_stock != stock_options[0]:
             suffix = '.KQ' if 'KOSDAQ' in str(market_type).upper() else '.KS'
             final_ticker = f"{stock_code}{suffix}"
         else:
-            final_ticker = f"{stock_code}.KS" # 기본값
+            final_ticker = f"{stock_code}.KS"
             
-    # 대시보드 함수 실행
     run_dashboard(final_ticker, company_name)
