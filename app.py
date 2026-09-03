@@ -31,16 +31,34 @@ st.markdown("""
 st.title("🤖 투자 도우미 프로그램")
 st.warning("⚠️ **[투자 유의사항]** 본 프로그램이 제공하는 AI 예측, 차트, 실시간 뉴스 감성 분석 등의 모든 정보는 과거 데이터를 기반으로 한 **참고용 보조 자료**입니다. 미래의 수익을 절대 보장하지 않으며, **모든 투자의 최종 판단과 그에 따른 책임은 전적으로 투자자 본인에게 있습니다.**")
 
-# --- [1. 공통 데이터 엔진] ---
+# --- [1. 공통 데이터 엔진 (실시간 자동완성용 데이터 준비)] ---
 @st.cache_data(ttl=3600)
 def load_krx_data():
     return fdr.StockListing('KRX')
+
+@st.cache_data(ttl=3600)
+def get_stock_list():
+    """모든 주식 종목을 '종목명 (코드)' 형태로 미리 만들어둡니다."""
+    try:
+        krx_df = load_krx_data()
+        # 한국 주식 리스트 생성 (예: 삼성전자 (005930))
+        krx_list = [f"{row['Name']} ({row['Code']})" for _, row in krx_df.iterrows()]
+    except:
+        krx_list = []
+        
+    global_list = [
+        "애플 (AAPL)", "테슬라 (TSLA)", "엔비디아 (NVDA)", "마이크로소프트 (MSFT)",
+        "구글 (GOOGL)", "아마존 (AMZN)", "메타 (META)"
+    ]
+    
+    # 맨 첫 줄은 안내 멘트
+    return ["🔍 여기를 클릭하고 종목명이나 코드를 입력하세요 (예: 삼성, 에코, AAPL)"] + global_list + krx_list
 
 @st.cache_resource
 def load_korean_ai(): 
     return pipeline("sentiment-analysis", model="snunlp/KR-FinBert-SC")
 
-# --- [2. 핵심 분석 대시보드 함수 (재사용 구조)] ---
+# --- [2. 핵심 분석 대시보드 로직] ---
 def run_dashboard(ticker_code, company_display_name):
     stock = yf.Ticker(ticker_code)
     df = stock.history(period="2y")
@@ -107,8 +125,8 @@ def run_dashboard(ticker_code, company_display_name):
     low52 = f"{currency}{int(low52_val):,}" if is_korean else f"{currency}{low52_val:.2f}"
     latest_rsi = df['RSI'].iloc[-1]
 
-    # 상단 요약 바 (5열)
-    st.success(f"🔍 **{company_display_name}** (`{ticker_code}`) 개별 분석 완료")
+    # 상단 요약 바 (배당수익률 제거, 5칸 꽉 채움)
+    st.success(f"🔍 **{company_display_name}** (`{ticker_code}`) 개별 분석")
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("현재 주가", price_fmt)
     c2.metric("시가총액", mkt_cap_str)
@@ -306,83 +324,35 @@ def run_dashboard(ticker_code, company_display_name):
         else:
             st.warning("한국거래소(KRX) 데이터를 불러올 수 없습니다.")
 
-# --- [3. 스마트 2단 검색 엔진 (자동완성)] ---
-user_input = st.text_input("🔍 회사명 또는 종목코드의 일부를 입력하고 엔터를 누르세요 (예: 삼성, 에코, AAPL)", "")
+# --- [3. 메인 실행 (실시간 자동완성 검색창)] ---
+stock_options = get_stock_list()
 
-if user_input:
-    clean_input = user_input.replace(" ", "").upper()
+# selectbox를 사용하여 타이핑할 때마다 리스트가 필터링 되도록 합니다.
+selected_stock = st.selectbox(
+    label="검색창",
+    options=stock_options,
+    index=0,
+    label_visibility="collapsed" # 검색창 위에 글자 숨기기
+)
+
+# 첫 번째 안내 멘트가 아닌, 진짜 종목이 선택되었을 때만 분석 실행
+if selected_stock and selected_stock != stock_options[0]:
+    # 선택된 글자에서 이름과 코드 분리 (예: "삼성전자 (005930)" -> 이름: 삼성전자, 코드: 005930)
+    company_name = selected_stock.split(" (")[0]
+    stock_code = selected_stock.split(" (")[1].replace(")", "")
     
-    # 1. 완벽하게 똑같이 쳤을 때 (미리 등록해둔 대장주 및 해외주식)
-    name_map = {
-        "삼성전자": "005930.KS", "SK하이닉스": "000660.KS", "LG에너지솔루션": "373220.KS",
-        "현대차": "005380.KS", "현대자동차": "005380.KS", "기아": "000270.KS", 
-        "NAVER": "035420.KS", "네이버": "035420.KS", "카카오": "035720.KS",
-        "한화에어로스페이스": "012450.KS", "펩트론": "087010.KQ", "에코프로": "086520.KQ", 
-        "애플": "AAPL", "테슬라": "TSLA", "엔비디아": "NVDA", "마이크로소프트": "MSFT",
-        "구글": "GOOGL", "아마존": "AMZN", "메타": "META"
-    }
-    
-    if clean_input in name_map:
-        run_dashboard(name_map[clean_input], user_input.upper())
-        st.stop()
-        
-    krx_df = load_krx_data()
-    krx_names_clean = krx_df['Name'].str.replace(" ", "").str.upper()
-    
-    # 2. 한국 주식 명부에서 완벽히 일치하는 이름이나 코드를 쳤을 때
-    exact_match = krx_df[(krx_names_clean == clean_input) | (krx_df['Code'] == clean_input)]
-    if not exact_match.empty:
-        code = exact_match.iloc[0]['Code']
-        market = exact_match.iloc[0]['Market']
-        name = exact_match.iloc[0]['Name']
-        suffix = '.KQ' if 'KOSDAQ' in str(market).upper() else '.KS'
-        run_dashboard(f"{code}{suffix}", name)
-        st.stop()
-        
-    # 3. 미국 주식 티커를 직접 쳤을 때 (예: QCOM, AMD)
-    if clean_input.isalpha() and clean_input.isascii():
-        try:
-            hist = yf.Ticker(clean_input).history(period="5d")
-            if not hist.empty:
-                run_dashboard(clean_input, clean_input)
-                st.stop()
-        except:
-            pass
-            
-    # 4. 완벽히 똑같진 않지만 "단어 일부"가 포함되어 있을 때 (이게 핵심 자동완성 기능!)
-    partial_matches = krx_df[
-        krx_df['Name'].str.contains(user_input, case=False, na=False, regex=False) |
-        krx_df['Code'].str.contains(user_input, case=False, na=False, regex=False)
-    ]
-    
-    if not partial_matches.empty:
-        st.info(f"💡 '{user_input}'(이)가 포함된 종목을 찾았습니다. 아래 목록에서 원하는 종목을 선택하세요.")
-        options = []
-        for _, row in partial_matches.head(30).iterrows():
-            options.append(f"{row['Name']} ({row['Code']})")
-            
-        # 선택 즉시 분석이 실행되는 마법의 드롭다운
-        selected = st.selectbox("👇 검색 결과 (클릭하여 선택)", options)
-        
-        if selected:
-            sel_name = selected.split(" (")[0]
-            sel_code = selected.split("(")[1].replace(")", "")
-            sel_match = krx_df[krx_df['Code'] == sel_code].iloc[0]
-            suffix = '.KQ' if 'KOSDAQ' in str(sel_match['Market']).upper() else '.KS'
-            
-            run_dashboard(f"{sel_code}{suffix}", sel_name)
+    # 한국 주식인지 미국 주식인지 판별하여 티커(Ticker) 완성
+    if stock_code.isalpha():
+        final_ticker = stock_code # AAPL, TSLA 등 미국 주식
     else:
-        # 5. 그래도 없으면 네이버 발음 검색 API로 유추
-        try:
-            q_enc = urllib.parse.quote(user_input)
-            res = requests.get(f"https://ac.finance.naver.com/ac?q={q_enc}&q_enc=utf-8&st=111&r_format=json&r_enc=utf-8", timeout=3).json()
-            items = res.get('items', [])
-            if items and len(items[0]) > 0:
-                code, name, market = items[0][0][0], items[0][0][1], items[0][0][2]
-                suffix = '.KQ' if '코스닥' in market else '.KS'
-                st.success(f"🤖 발음/오타 자동 교정: '{name}'(으)로 분석합니다.")
-                run_dashboard(f"{code}{suffix}", name)
-            else:
-                st.warning("데이터를 찾을 수 없습니다. 검색어를 다시 확인해주세요.")
-        except:
-            st.warning("데이터를 찾을 수 없습니다. 검색어를 다시 확인해주세요.")
+        krx_df = load_krx_data()
+        market_info = krx_df[krx_df['Code'] == stock_code]
+        if not market_info.empty:
+            market_type = market_info.iloc[0]['Market']
+            suffix = '.KQ' if 'KOSDAQ' in str(market_type).upper() else '.KS'
+            final_ticker = f"{stock_code}{suffix}"
+        else:
+            final_ticker = f"{stock_code}.KS" # 기본값
+            
+    # 대시보드 함수 실행
+    run_dashboard(final_ticker, company_name)
