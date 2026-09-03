@@ -29,13 +29,27 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("🤖 투자 도우미 프로그램")
-
 st.warning("⚠️ **[투자 유의사항]** 본 프로그램이 제공하는 AI 예측, 차트, 실시간 뉴스 감성 분석 등의 모든 정보는 과거 데이터를 기반으로 한 **참고용 보조 자료**입니다. 미래의 수익을 절대 보장하지 않으며, **모든 투자의 최종 판단과 그에 따른 책임은 전적으로 투자자 본인에게 있습니다.**")
 
-# --- [1. 공통 데이터 엔진] ---
+# --- [1. 공통 데이터 엔진 & 자동완성 리스트 준비] ---
 @st.cache_data(ttl=3600)
 def load_krx_data():
     return fdr.StockListing('KRX')
+
+@st.cache_data(ttl=3600)
+def get_stock_list():
+    """자동완성(검색)용으로 한국 주식 전체 이름 리스트와 글로벌 대장주 리스트를 합쳐서 제공합니다."""
+    try:
+        krx_df = load_krx_data()
+        kor_names = krx_df['Name'].tolist()
+    except:
+        kor_names = []
+        
+    global_names = ["애플", "테슬라", "엔비디아", "마이크로소프트", "구글", "아마존", "메타"]
+    
+    # "종목을 선택하거나 직접 검색어를 입력하세요" 같은 안내 멘트를 맨 위에 하나 둡니다.
+    full_list = ["여기를 클릭하여 종목명 입력 (예: 삼성전자, 테슬라, 애플)"] + global_names + kor_names
+    return full_list
 
 def resolve_ticker(user_input):
     query = user_input.strip()
@@ -48,7 +62,8 @@ def resolve_ticker(user_input):
         "현대차": "005380.KS", "현대자동차": "005380.KS", "기아": "000270.KS", 
         "NAVER": "035420.KS", "네이버": "035420.KS", "카카오": "035720.KS",
         "한화에어로스페이스": "012450.KS", "펩트론": "087010.KQ", "에코프로": "086520.KQ", 
-        "애플": "AAPL", "테슬라": "TSLA", "엔비디아": "NVDA", "마이크로소프트": "MSFT"
+        "애플": "AAPL", "테슬라": "TSLA", "엔비디아": "NVDA", "마이크로소프트": "MSFT",
+        "구글": "GOOGL", "아마존": "AMZN", "메타": "META"
     }
     if clean_query in name_map:
         return name_map[clean_query], query.upper()
@@ -73,11 +88,18 @@ def resolve_ticker(user_input):
 
     return query, query
 
-# --- [2. 메인 화면 - 개별 종목 분석] ---
-user_input = st.text_input("회사명 또는 종목코드를 입력하세요 (예: SK하이닉스, 삼성전자, 테슬라)", "삼성전자")
+# --- [2. 메인 화면 - 실시간 자동완성 검색창] ---
+# st.selectbox를 사용하면 텍스트를 치는 순간 실시간으로 리스트가 필터링(자동완성) 됩니다.
+stock_options = get_stock_list()
+selected_stock = st.selectbox(
+    "회사명 또는 종목코드를 입력하세요", 
+    options=stock_options,
+    index=0  # 기본값은 안내 멘트
+)
 
-if user_input:
-    ticker_code, company_display_name = resolve_ticker(user_input)
+# 안내 멘트가 아닌 진짜 종목이 선택되었을 때만 분석 시작
+if selected_stock and selected_stock != stock_options[0]:
+    ticker_code, company_display_name = resolve_ticker(selected_stock)
     stock = yf.Ticker(ticker_code)
     df = stock.history(period="2y")
     
@@ -118,7 +140,7 @@ if user_input:
         else:
             up_prob, test_acc = 50.0, 0.0
 
-        # --- [데이터 강제 추출 (누락 방지)] ---
+        # --- [데이터 강제 추출] ---
         price_fmt = f"{currency}{current_price:,.0f}" if is_korean else f"{currency}{current_price:,.2f}"
         
         krx_df = load_krx_data()
@@ -141,7 +163,7 @@ if user_input:
         
         latest_rsi = df['RSI'].iloc[-1]
 
-        # ★ 상단 요약 바 (배당수익률 완전 삭제, 5칸으로 구성) ★
+        # 상단 요약 바 
         st.success(f"🔍 **{company_display_name}** (`{ticker_code}`) 개별 분석")
         c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("현재 주가", price_fmt)
