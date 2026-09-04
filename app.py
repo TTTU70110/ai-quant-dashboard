@@ -65,7 +65,6 @@ def get_fear_and_greed_index():
         spy = yf.Ticker("SPY").history(period="1mo")
         vix = yf.Ticker("^VIX").history(period="1mo")
         
-        # 야후 파이낸스 NaN 에러 방지
         spy = spy.dropna(subset=['Close'])
         vix = vix.dropna(subset=['Close'])
         
@@ -89,7 +88,6 @@ def run_dashboard(ticker_code, company_display_name):
     stock = yf.Ticker(ticker_code)
     df = stock.history(period="2y")
     
-    # ★ 핵심 수정: 야후 파이낸스가 가끔 보내는 결측치(빈칸, NaN) 완벽 제거 ★
     if not df.empty:
         df = df.dropna(subset=['Close', 'High', 'Low'])
     
@@ -102,7 +100,6 @@ def run_dashboard(ticker_code, company_display_name):
     currency = "₩" if is_korean else "$"
     
     current_price = float(df['Close'].iloc[-1])
-    # 만약 가격이 여전히 오류라면 0으로 처리하여 다운 방지
     if pd.isna(current_price): current_price = 0.0 
     
     df['MA20'] = df['Close'].rolling(20).mean()
@@ -118,7 +115,7 @@ def run_dashboard(ticker_code, company_display_name):
     avg_loss = loss.rolling(window=14).mean()
     rs = avg_gain / (avg_loss + 1e-9)
     df['RSI'] = 100.0 - (100.0 / (1.0 + rs))
-    df['RSI'] = df['RSI'].fillna(50.0) # RSI 빈칸 방지
+    df['RSI'] = df['RSI'].fillna(50.0)
     
     ema12 = df['Close'].ewm(span=12, adjust=False).mean()
     ema26 = df['Close'].ewm(span=26, adjust=False).mean()
@@ -171,7 +168,6 @@ def run_dashboard(ticker_code, company_display_name):
     high52_val = float(last_252_days['High'].max())
     low52_val = float(last_252_days['Low'].min())
     
-    # 52주 최고/최저 빈칸 버그 방어코드
     if pd.isna(high52_val): high52_val = current_price
     if pd.isna(low52_val): low52_val = current_price
     
@@ -340,7 +336,6 @@ def run_dashboard(ticker_code, company_display_name):
             b_tick, b_name = ("^KS11", "코스피") if is_korean else ("SPY", "S&P 500")
             bench_df = yf.Ticker(b_tick).history(period="2y")
             
-            # 결측치 방어
             bench_df = bench_df.dropna(subset=['Close'])
             c_dates = df.index.intersection(bench_df.index)
             
@@ -396,8 +391,9 @@ def run_dashboard(ticker_code, company_display_name):
             top100 = krx_df.sort_values(by='Marcap', ascending=False).head(100).reset_index(drop=True)
             top100.index = top100.index + 1
             
+            # ★ 완벽하게 개선된 직관적인 카드형 UI 디자인 ★
             st.markdown("#### 🔥 오늘 시장을 주도하는 핫(Hot) 테마 Top 3")
-            st.markdown("오늘 시가총액 상위 100개 종목 중, **가장 강하게 상승하고 있는 3개 산업군과 그 상승을 이끄는 대장주**를 직관적으로 보여줍니다.")
+            st.markdown("오늘 시가총액 상위 100개 종목 중, **가장 강하게 상승하고 있는 3개 산업군과 그 상승을 이끄는 대장주**입니다.")
             
             def get_sector_name(sector_str):
                 s = str(sector_str)
@@ -437,22 +433,32 @@ def run_dashboard(ticker_code, company_display_name):
             
             if not hot_sectors.empty:
                 top3_sectors = hot_sectors.head(3)
-                cols = st.columns(len(top3_sectors))
+                cols = st.columns(3) # 무조건 3분할로 고정하여 예쁘게 정렬
                 
                 medals = ["🥇 1위", "🥈 2위", "🥉 3위"]
                 for i, (idx, row) in enumerate(top3_sectors.iterrows()):
                     sec_name = row['섹터명']
                     sec_mean = row['ChagesRatio']
-                    
                     sec_stocks = valid_top100[valid_top100['섹터명'] == sec_name].sort_values(by='ChagesRatio', ascending=False).head(3)
                     
-                    stock_list_str = ""
-                    for _, s_row in sec_stocks.iterrows():
-                        color = "🔴" if s_row['ChagesRatio'] > 0 else "🔵" if s_row['ChagesRatio'] < 0 else "⚫"
-                        stock_list_str += f"{color} **{s_row['Name']}** ({s_row['ChagesRatio']:+.2f}%)\n\n"
-                    
                     with cols[i]:
-                        st.success(f"### {medals[i]}\n#### {sec_name}\n\n테마 평균: **{sec_mean:+.2f}%**\n\n---\n**[🚀 테마 상승 주도주]**\n\n{stock_list_str}")
+                        # 독립된 카드(Box) 컨테이너 생성
+                        with st.container(border=True):
+                            st.markdown(f"<h4 style='text-align: center; margin-bottom: 0px;'>{medals[i]}<br>{sec_name}</h4>", unsafe_allow_html=True)
+                            
+                            # 퍼센트 색상 지정 (상승은 빨강, 하락은 파랑)
+                            color = "#ff4b4b" if sec_mean > 0 else "#00b4d8"
+                            st.markdown(f"<h2 style='text-align: center; color: {color}; margin-top: 10px; margin-bottom: 10px;'>{sec_mean:+.2f}%</h2>", unsafe_allow_html=True)
+                            
+                            st.caption("🔥 주도주 Top 3")
+                            
+                            # 데이터프레임 깔끔하게 포맷팅
+                            df_disp = sec_stocks[['Name', 'ChagesRatio']].copy()
+                            df_disp['ChagesRatio'] = df_disp['ChagesRatio'].apply(lambda x: f"🔺 {x:+.2f}%" if x > 0 else f"🔻 {x:+.2f}%" if x < 0 else f"{x:.2f}%")
+                            df_disp.columns = ['종목명', '등락률']
+                            
+                            # 인덱스 숨기고 폭을 꽉 채워서 표출
+                            st.dataframe(df_disp, hide_index=True, use_container_width=True)
             else:
                 st.info("📉 오늘 시장 전체가 하락장이라 뚜렷한 상승 주도 테마가 없습니다.")
             
@@ -469,7 +475,7 @@ def run_dashboard(ticker_code, company_display_name):
                     
                     try:
                         hist = yf.Ticker(t_code).history(period="3mo")
-                        hist = hist.dropna(subset=['Close']) # 스캐너 내부에서도 빈칸 버그 방지
+                        hist = hist.dropna(subset=['Close'])
                         
                         if len(hist) > 20:
                             hist['MA10'] = hist['Close'].rolling(10).mean()
