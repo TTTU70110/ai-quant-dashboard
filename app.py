@@ -65,6 +65,10 @@ def get_fear_and_greed_index():
         spy = yf.Ticker("SPY").history(period="1mo")
         vix = yf.Ticker("^VIX").history(period="1mo")
         
+        # 야후 파이낸스 NaN 에러 방지
+        spy = spy.dropna(subset=['Close'])
+        vix = vix.dropna(subset=['Close'])
+        
         delta = spy['Close'].diff()
         gain = delta.where(delta > 0, 0).rolling(window=14).mean()
         loss = delta.where(delta < 0, 0).abs().rolling(window=14).mean()
@@ -85,6 +89,10 @@ def run_dashboard(ticker_code, company_display_name):
     stock = yf.Ticker(ticker_code)
     df = stock.history(period="2y")
     
+    # ★ 핵심 수정: 야후 파이낸스가 가끔 보내는 결측치(빈칸, NaN) 완벽 제거 ★
+    if not df.empty:
+        df = df.dropna(subset=['Close', 'High', 'Low'])
+    
     if df.empty or len(df) < 30:
         st.warning("데이터를 불러오지 못했습니다. 종목명이나 코드가 정확한지 확인해주세요.")
         return
@@ -92,7 +100,10 @@ def run_dashboard(ticker_code, company_display_name):
     info = stock.info
     is_korean = ticker_code.endswith('.KS') or ticker_code.endswith('.KQ')
     currency = "₩" if is_korean else "$"
-    current_price = df['Close'].iloc[-1]
+    
+    current_price = float(df['Close'].iloc[-1])
+    # 만약 가격이 여전히 오류라면 0으로 처리하여 다운 방지
+    if pd.isna(current_price): current_price = 0.0 
     
     df['MA20'] = df['Close'].rolling(20).mean()
     df['MA60'] = df['Close'].rolling(60).mean()
@@ -107,6 +118,7 @@ def run_dashboard(ticker_code, company_display_name):
     avg_loss = loss.rolling(window=14).mean()
     rs = avg_gain / (avg_loss + 1e-9)
     df['RSI'] = 100.0 - (100.0 / (1.0 + rs))
+    df['RSI'] = df['RSI'].fillna(50.0) # RSI 빈칸 방지
     
     ema12 = df['Close'].ewm(span=12, adjust=False).mean()
     ema26 = df['Close'].ewm(span=26, adjust=False).mean()
@@ -156,8 +168,12 @@ def run_dashboard(ticker_code, company_display_name):
             mkt_cap_str = f"${mkt_cap / 1_000_000_000:.2f}B"
 
     last_252_days = df.tail(252)
-    high52_val = last_252_days['High'].max()
-    low52_val = last_252_days['Low'].min()
+    high52_val = float(last_252_days['High'].max())
+    low52_val = float(last_252_days['Low'].min())
+    
+    # 52주 최고/최저 빈칸 버그 방어코드
+    if pd.isna(high52_val): high52_val = current_price
+    if pd.isna(low52_val): low52_val = current_price
     
     if is_korean:
         high52 = f"{currency}{int(high52_val):,}"
@@ -323,6 +339,9 @@ def run_dashboard(ticker_code, company_display_name):
         try:
             b_tick, b_name = ("^KS11", "코스피") if is_korean else ("SPY", "S&P 500")
             bench_df = yf.Ticker(b_tick).history(period="2y")
+            
+            # 결측치 방어
+            bench_df = bench_df.dropna(subset=['Close'])
             c_dates = df.index.intersection(bench_df.index)
             
             comp_fig = go.Figure()
@@ -377,7 +396,6 @@ def run_dashboard(ticker_code, company_display_name):
             top100 = krx_df.sort_values(by='Marcap', ascending=False).head(100).reset_index(drop=True)
             top100.index = top100.index + 1
             
-            # ★ 완전히 뜯어고친 섹터 랭킹 UI (그래프 삭제, 대장주 위주) ★
             st.markdown("#### 🔥 오늘 시장을 주도하는 핫(Hot) 테마 Top 3")
             st.markdown("오늘 시가총액 상위 100개 종목 중, **가장 강하게 상승하고 있는 3개 산업군과 그 상승을 이끄는 대장주**를 직관적으로 보여줍니다.")
             
@@ -408,7 +426,6 @@ def run_dashboard(ticker_code, company_display_name):
             
             top100_sec['섹터명'] = top100_sec['Sector'].apply(get_sector_name)
             
-            # 통계 오류를 막기 위해 해당 섹터에 종목이 3개 이상 있는 경우만 인정
             sec_counts = top100_sec['섹터명'].value_counts()
             valid_sectors = sec_counts[sec_counts >= 3].index
             valid_top100 = top100_sec[top100_sec['섹터명'].isin(valid_sectors)]
@@ -427,7 +444,6 @@ def run_dashboard(ticker_code, company_display_name):
                     sec_name = row['섹터명']
                     sec_mean = row['ChagesRatio']
                     
-                    # 해당 섹터 내에서 가장 많이 오른 탑 3 대장주 뽑기
                     sec_stocks = valid_top100[valid_top100['섹터명'] == sec_name].sort_values(by='ChagesRatio', ascending=False).head(3)
                     
                     stock_list_str = ""
@@ -453,6 +469,8 @@ def run_dashboard(ticker_code, company_display_name):
                     
                     try:
                         hist = yf.Ticker(t_code).history(period="3mo")
+                        hist = hist.dropna(subset=['Close']) # 스캐너 내부에서도 빈칸 버그 방지
+                        
                         if len(hist) > 20:
                             hist['MA10'] = hist['Close'].rolling(10).mean()
                             hist['MA20'] = hist['Close'].rolling(20).mean()
