@@ -1,5 +1,4 @@
 import os
-import re
 try:
     import FinanceDataReader as fdr
 except ImportError:
@@ -57,44 +56,6 @@ def get_stock_list():
 @st.cache_resource
 def load_korean_ai(): 
     return pipeline("sentiment-analysis", model="snunlp/KR-FinBert-SC")
-
-# ★ 에러율 0% 무적의 수급 데이터 파싱 (라이브러리 의존성 제거) ★
-@st.cache_data(ttl=3600)
-def get_investor_data(stock_code):
-    try:
-        code_only = stock_code.split('.')[0]
-        url = f"https://finance.naver.com/item/frgn.naver?code={code_only}"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0'}
-        res = requests.get(url, headers=headers, timeout=5)
-        
-        # HTML 텍스트에서 정규식으로 테이블 데이터 행만 추출
-        rows = re.findall(r'<tr onmouseover="mouseOver\(this\)" onmouseout="mouseOut\(this\)">.*?</tr>', res.text, re.DOTALL)
-        
-        res_list = []
-        for row in rows[:10]:
-            # 각 칸(td) 안의 HTML 태그들을 싹 다 지우고 글자만 추출
-            tds = re.findall(r'<td[^>]*>(.*?)</td>', row, re.DOTALL)
-            if len(tds) >= 7:
-                date_str = re.sub(r'<[^>]+>', '', tds[0]).strip()
-                try:
-                    close_price = int(re.sub(r'<[^>]+>', '', tds[1]).replace(',', '').strip())
-                    inst_net = int(re.sub(r'<[^>]+>', '', tds[5]).replace(',', '').replace('+', '').strip())
-                    fore_net = int(re.sub(r'<[^>]+>', '', tds[6]).replace(',', '').replace('+', '').strip())
-                except:
-                    continue
-                    
-                res_list.append({
-                    '날짜': date_str,
-                    '종가': close_price,
-                    '기관순매수': inst_net,
-                    '외국인순매수': fore_net
-                })
-        
-        if res_list:
-            return pd.DataFrame(res_list)
-        return pd.DataFrame()
-    except Exception as e:
-        return pd.DataFrame()
 
 # ★ 공포와 탐욕 지수 계산 엔진 ★
 @st.cache_data(ttl=3600)
@@ -219,7 +180,7 @@ def run_dashboard(ticker_code, company_display_name):
     chart_config = {'displayModeBar': False, 'scrollZoom': False}
 
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "📊 차트 & 뉴스", "🏢 재무 & 수급", "📈 시장 비교", "🧪 백테스트", "🚀 AI 스캐너"
+        "📊 차트 & 뉴스", "🏢 재무제표", "📈 시장 비교", "🧪 백테스트", "🚀 AI 스캐너"
     ])
 
     with tab1:
@@ -338,32 +299,23 @@ def run_dashboard(ticker_code, company_display_name):
                 fin_fig.update_yaxes(fixedrange=True)
                 fin_fig.update_layout(barmode='group', template='plotly_dark', height=450, yaxis_title=unit_str)
                 st.plotly_chart(fin_fig, use_container_width=True, config=chart_config)
+                
+                st.markdown(f"##### 📊 상세 재무 데이터 ({unit_str})")
+                disp_df = fin[['Total Revenue', 'Net Income']].copy()
+                disp_df.index = years
+                disp_df.columns = ['매출액', '당기순이익']
+                
+                def format_money(val):
+                    if pd.isna(val) or val == 0: return "N/A"
+                    return f"₩{int(val):,}" if is_korean else f"${int(val):,}"
+                    
+                disp_df['매출액'] = disp_df['매출액'].apply(format_money)
+                disp_df['당기순이익'] = disp_df['당기순이익'].apply(format_money)
+                st.dataframe(disp_df.T, use_container_width=True)
             else: 
                 st.info("재무 데이터를 제공하지 않습니다.")
         except: 
             st.warning("재무 데이터를 불러오는 중 오류가 발생했습니다.")
-            
-        st.divider()
-        st.subheader("👥 최근 10일 외국인/기관 매매 동향 (수급)")
-        if is_korean:
-            with st.spinner("수급 데이터를 가져오는 중..."):
-                inv_df = get_investor_data(ticker_code)
-                if not inv_df.empty:
-                    inv_df['종가'] = inv_df['종가'].apply(
-                        lambda x: f"₩{int(x):,}" if float(x) > 0 else "-"
-                    )
-                    inv_df['기관순매수'] = inv_df['기관순매수'].apply(
-                        lambda x: f"🔴 +{int(x):,}" if float(x) > 0 else f"🔵 {int(x):,}" if float(x) < 0 else "0"
-                    )
-                    inv_df['외국인순매수'] = inv_df['외국인순매수'].apply(
-                        lambda x: f"🔴 +{int(x):,}" if float(x) > 0 else f"🔵 {int(x):,}" if float(x) < 0 else "0"
-                    )
-                    st.dataframe(inv_df, use_container_width=True)
-                    st.caption("* 단위: 주 (🔴 순매수 / 🔵 순매도)")
-                else:
-                    st.info("현재 수급 데이터를 불러올 수 없습니다. (일시적 서버 지연 또는 제공하지 않는 종목)")
-        else:
-            st.info("💡 해외 주식은 상세 수급 동향(외국인/기관) 데이터를 제공하지 않습니다.")
 
     with tab3:
         st.subheader(f"📈 시장 벤치마크 수익률 비교")
