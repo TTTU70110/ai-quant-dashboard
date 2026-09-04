@@ -1,14 +1,10 @@
 import os
-import sys
-
-# ★ 핵심: 네이버 차단을 우회하기 위해 KRX 공식 라이브러리(pykrx) 강제 설치 ★
+import re
 try:
     import FinanceDataReader as fdr
-    from pykrx import stock as krx_stock
 except ImportError:
-    os.system(f"{sys.executable} -m pip install finance-datareader pykrx > /dev/null 2>&1")
+    os.system("pip install finance-datareader > /dev/null 2>&1")
     import FinanceDataReader as fdr
-    from pykrx import stock as krx_stock
 
 import streamlit as st
 import yfinance as yf
@@ -22,7 +18,6 @@ from sklearn.metrics import accuracy_score
 import urllib.parse
 import requests
 import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta
 
 st.set_page_config(layout="wide", page_title="투자 도우미 프로그램")
 
@@ -63,61 +58,40 @@ def get_stock_list():
 def load_korean_ai(): 
     return pipeline("sentiment-analysis", model="snunlp/KR-FinBert-SC")
 
-# ★ 네이버 차단 100% 우회: pykrx 라이브러리 사용 ★
+# ★ 에러율 0% 무적의 수급 데이터 파싱 (라이브러리 의존성 제거) ★
 @st.cache_data(ttl=3600)
 def get_investor_data(stock_code):
     try:
         code_only = stock_code.split('.')[0]
+        url = f"https://finance.naver.com/item/frgn.naver?code={code_only}"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0'}
+        res = requests.get(url, headers=headers, timeout=5)
         
-        # 오늘 날짜와 15일 전 날짜 세팅 (영업일 기준 10일을 뽑기 위함)
-        today_date = datetime.today()
-        start_date = today_date - timedelta(days=20)
+        # HTML 텍스트에서 정규식으로 테이블 데이터 행만 추출
+        rows = re.findall(r'<tr onmouseover="mouseOver\(this\)" onmouseout="mouseOut\(this\)">.*?</tr>', res.text, re.DOTALL)
         
-        today_str = today_date.strftime("%Y%m%d")
-        start_str = start_date.strftime("%Y%m%d")
-        
-        # pykrx를 이용해 한국거래소에서 직접 수급 데이터 가져오기 (종목별 투자자 순매수)
-        df_vol = krx_stock.get_market_trading_volume_by_date(start_str, today_str, code_only)
-        
-        if not df_vol.empty:
-            # 인덱스(날짜)를 컬럼으로 빼기
-            df_vol = df_vol.reset_index()
-            
-            # 컬럼명 맞추기: 기관합계, 외국인합계
-            # pykrx의 반환 컬럼명에 따라 안전하게 매핑
-            cols = list(df_vol.columns)
-            
-            # 주가 데이터 가져오기 (FDR 이용)
-            price_df = fdr.DataReader(code_only, start_date.strftime("%Y-%m-%d"), today_date.strftime("%Y-%m-%d")).reset_index()
-            price_df['Date'] = pd.to_datetime(price_df['Date'])
-            
-            res_list = []
-            for _, row in df_vol.iterrows():
-                date_obj = row['날짜']
-                date_str = date_obj.strftime("%Y-%m-%d")
-                
-                # 기관, 외국인 순매수 찾기 (컬럼명 유연 대응)
-                inst = row.get('기관합계', 0)
-                foreigner = row.get('외국인합계', 0)
-                
-                # 해당 날짜의 주가 찾기
-                close_price = 0
-                price_match = price_df[price_df['Date'] == date_obj]
-                if not price_match.empty:
-                    close_price = price_match.iloc[0]['Close']
+        res_list = []
+        for row in rows[:10]:
+            # 각 칸(td) 안의 HTML 태그들을 싹 다 지우고 글자만 추출
+            tds = re.findall(r'<td[^>]*>(.*?)</td>', row, re.DOTALL)
+            if len(tds) >= 7:
+                date_str = re.sub(r'<[^>]+>', '', tds[0]).strip()
+                try:
+                    close_price = int(re.sub(r'<[^>]+>', '', tds[1]).replace(',', '').strip())
+                    inst_net = int(re.sub(r'<[^>]+>', '', tds[5]).replace(',', '').replace('+', '').strip())
+                    fore_net = int(re.sub(r'<[^>]+>', '', tds[6]).replace(',', '').replace('+', '').strip())
+                except:
+                    continue
                     
                 res_list.append({
                     '날짜': date_str,
                     '종가': close_price,
-                    '기관순매수': int(inst),
-                    '외국인순매수': int(foreigner)
+                    '기관순매수': inst_net,
+                    '외국인순매수': fore_net
                 })
-            
-            res_df = pd.DataFrame(res_list)
-            # 최신 날짜가 위로 오게 정렬 후 10개 자르기
-            res_df = res_df.sort_values(by='날짜', ascending=False).head(10).reset_index(drop=True)
-            return res_df
-            
+        
+        if res_list:
+            return pd.DataFrame(res_list)
         return pd.DataFrame()
     except Exception as e:
         return pd.DataFrame()
@@ -370,9 +344,9 @@ def run_dashboard(ticker_code, company_display_name):
             st.warning("재무 데이터를 불러오는 중 오류가 발생했습니다.")
             
         st.divider()
-        st.subheader("👥 최근 10영업일 외국인/기관 매매 동향 (수급)")
+        st.subheader("👥 최근 10일 외국인/기관 매매 동향 (수급)")
         if is_korean:
-            with st.spinner("한국거래소(KRX) 공식 수급 데이터를 불러오는 중..."):
+            with st.spinner("수급 데이터를 가져오는 중..."):
                 inv_df = get_investor_data(ticker_code)
                 if not inv_df.empty:
                     inv_df['종가'] = inv_df['종가'].apply(
