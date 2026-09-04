@@ -2,7 +2,6 @@ import os
 try:
     import FinanceDataReader as fdr
 except ImportError:
-    # 수급 데이터를 파싱하기 위해 lxml 추가
     os.system("pip install finance-datareader lxml > /dev/null 2>&1")
     import FinanceDataReader as fdr
 
@@ -55,7 +54,6 @@ def get_stock_list():
 def load_korean_ai(): 
     return pipeline("sentiment-analysis", model="snunlp/KR-FinBert-SC")
 
-# ★ 신규 기능: 네이버 금융 외국인/기관 수급 데이터 스크래핑
 @st.cache_data(ttl=3600)
 def get_investor_data(stock_code):
     try:
@@ -67,60 +65,4 @@ def get_investor_data(stock_code):
         
         for df in dfs:
             if len(df.columns) >= 7:
-                # 날짜 형식이 있는 테이블 찾기
-                if df.iloc[:, 0].astype(str).str.match(r'^\d{4}\.\d{2}\.\d{2}$', na=False).any():
-                    df = df[df.iloc[:, 0].astype(str).str.match(r'^\d{4}\.\d{2}\.\d{2}$', na=False)]
-                    res_df = df.iloc[:, [0, 1, 5, 6]].copy()
-                    res_df.columns = ['날짜', '종가', '기관순매수', '외국인순매수']
-                    return res_df.head(10)
-        return pd.DataFrame()
-    except:
-        return pd.DataFrame()
-
-# --- [2. 핵심 분석 대시보드 로직] ---
-def run_dashboard(ticker_code, company_display_name):
-    stock = yf.Ticker(ticker_code)
-    df = stock.history(period="2y")
-    
-    if df.empty or len(df) < 30:
-        st.warning("데이터를 불러오지 못했습니다. 종목명이나 코드가 정확한지 확인해주세요.")
-        return
-        
-    info = stock.info
-    is_korean = ticker_code.endswith('.KS') or ticker_code.endswith('.KQ')
-    currency = "₩" if is_korean else "$"
-    current_price = df['Close'].iloc[-1]
-    
-    # 보조 지표 계산
-    df['MA20'] = df['Close'].rolling(20).mean()
-    df['MA60'] = df['Close'].rolling(60).mean()
-    df['STD20'] = df['Close'].rolling(20).std()
-    df['Upper_Band'] = df['MA20'] + (df['STD20'] * 2)
-    df['Lower_Band'] = df['MA20'] - (df['STD20'] * 2)
-    
-    delta = df['Close'].diff()
-    rs = (delta.where(delta > 0, 0)).rolling(14).mean() / ((delta.where(delta < 0, 0)).rolling(14).mean().abs() + 1e-9)
-    df['RSI'] = 100 - (100 / (1 + rs))
-    
-    ema12, ema26 = df['Close'].ewm(span=12, adjust=False).mean(), df['Close'].ewm(span=26, adjust=False).mean()
-    df['MACD'] = ema12 - ema26
-    df['Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
-    df['Price_Change'] = df['Close'].pct_change()
-    df['Volume_Change'] = df['Volume'].pct_change()
-    
-    # ML 모델 학습
-    df['Target'] = np.where(df['Close'].shift(-1) > df['Close'], 1, 0)
-    ml_df = df.dropna().copy()
-    if len(ml_df) > 50:
-        X, y = ml_df[['MA20', 'MA60', 'RSI', 'MACD', 'Price_Change', 'Volume_Change']], ml_df['Target']
-        split_idx = int(len(ml_df) * 0.8)
-        test_model = RandomForestClassifier(n_estimators=100, random_state=42).fit(X.iloc[:split_idx], y.iloc[:split_idx])
-        test_acc = accuracy_score(y.iloc[split_idx:], test_model.predict(X.iloc[split_idx:])) * 100
-        
-        final_model = RandomForestClassifier(n_estimators=100, random_state=42).fit(X, y)
-        up_prob = final_model.predict_proba(X.iloc[-1:])[0][1] * 100
-    else:
-        up_prob, test_acc = 50.0, 0.0
-
-    # 지표 데이터 추출
-    price_fmt = f"{
+                if df.iloc[:, 0].astype(str).str.match(r'
