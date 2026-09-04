@@ -255,12 +255,12 @@ def run_dashboard(ticker_code, company_display_name):
             
             fig.add_trace(go.Scatter(
                 x=d_str, y=chart_df['Upper_Band'], 
-                line=dict(color='rgba(255,255,255,0.3)', dash='dash'), name='볼린 상한'
+                line=dict(color='rgba(255,255,255,0.3)', dash='dash'), name='볼린저 상한'
             ), row=1, col=1)
             
             fig.add_trace(go.Scatter(
                 x=d_str, y=chart_df['Lower_Band'], 
-                line=dict(color='rgba(255,255,255,0.3)', dash='dash'), name='볼린 하한'
+                line=dict(color='rgba(255,255,255,0.3)', dash='dash'), name='볼린저 하한'
             ), row=1, col=1)
             
             fig.add_trace(go.Scatter(x=d_str, y=chart_df['MA20'], line=dict(color='orange'), name='20일선'), row=1, col=1)
@@ -377,8 +377,9 @@ def run_dashboard(ticker_code, company_display_name):
             top100 = krx_df.sort_values(by='Marcap', ascending=False).head(100).reset_index(drop=True)
             top100.index = top100.index + 1
             
-            st.markdown("#### 🔥 오늘 시장을 주도하는 핫(Hot) 섹터 랭킹")
-            st.markdown("한국 주식 시가총액 상위 100개 기업의 오늘 등락률을 산업군(섹터)별로 묶어, 가장 자금이 많이 몰린 테마를 분석합니다.")
+            # ★ 완전히 뜯어고친 섹터 랭킹 UI (그래프 삭제, 대장주 위주) ★
+            st.markdown("#### 🔥 오늘 시장을 주도하는 핫(Hot) 테마 Top 3")
+            st.markdown("오늘 시가총액 상위 100개 종목 중, **가장 강하게 상승하고 있는 3개 산업군과 그 상승을 이끄는 대장주**를 직관적으로 보여줍니다.")
             
             def get_sector_name(sector_str):
                 s = str(sector_str)
@@ -395,7 +396,6 @@ def run_dashboard(ticker_code, company_display_name):
                 
             top100_sec = top100.copy()
             
-            # ★ KeyError 방지를 위한 안전망 코드 추가 ★
             if 'Sector' not in top100_sec.columns:
                 try:
                     krx_desc = fdr.StockListing('KRX-DESC')
@@ -407,21 +407,38 @@ def run_dashboard(ticker_code, company_display_name):
                     top100_sec['Sector'] = '기타'
             
             top100_sec['섹터명'] = top100_sec['Sector'].apply(get_sector_name)
-            sec_trend = top100_sec.groupby('섹터명')['ChagesRatio'].mean().reset_index()
+            
+            # 통계 오류를 막기 위해 해당 섹터에 종목이 3개 이상 있는 경우만 인정
+            sec_counts = top100_sec['섹터명'].value_counts()
+            valid_sectors = sec_counts[sec_counts >= 3].index
+            valid_top100 = top100_sec[top100_sec['섹터명'].isin(valid_sectors)]
+            
+            sec_trend = valid_top100.groupby('섹터명')['ChagesRatio'].mean().reset_index()
             sec_trend = sec_trend.sort_values('ChagesRatio', ascending=False).reset_index(drop=True)
             
-            colors_sec = ['#ef5350' if val > 0 else '#26a69a' if val < 0 else 'gray' for val in sec_trend['ChagesRatio']]
-            fig_sec = go.Figure(go.Bar(
-                x=sec_trend['섹터명'], 
-                y=sec_trend['ChagesRatio'],
-                marker_color=colors_sec,
-                text=sec_trend['ChagesRatio'].apply(lambda x: f"{x:+.2f}%"),
-                textposition='auto'
-            ))
-            fig_sec.update_layout(template='plotly_dark', height=350, margin=dict(t=20, b=0, l=0, r=0))
-            fig_sec.update_xaxes(fixedrange=True)
-            fig_sec.update_yaxes(fixedrange=True)
-            st.plotly_chart(fig_sec, use_container_width=True, config=chart_config)
+            hot_sectors = sec_trend[sec_trend['ChagesRatio'] > 0]
+            
+            if not hot_sectors.empty:
+                top3_sectors = hot_sectors.head(3)
+                cols = st.columns(len(top3_sectors))
+                
+                medals = ["🥇 1위", "🥈 2위", "🥉 3위"]
+                for i, (idx, row) in enumerate(top3_sectors.iterrows()):
+                    sec_name = row['섹터명']
+                    sec_mean = row['ChagesRatio']
+                    
+                    # 해당 섹터 내에서 가장 많이 오른 탑 3 대장주 뽑기
+                    sec_stocks = valid_top100[valid_top100['섹터명'] == sec_name].sort_values(by='ChagesRatio', ascending=False).head(3)
+                    
+                    stock_list_str = ""
+                    for _, s_row in sec_stocks.iterrows():
+                        color = "🔴" if s_row['ChagesRatio'] > 0 else "🔵" if s_row['ChagesRatio'] < 0 else "⚫"
+                        stock_list_str += f"{color} **{s_row['Name']}** ({s_row['ChagesRatio']:+.2f}%)\n\n"
+                    
+                    with cols[i]:
+                        st.success(f"### {medals[i]}\n#### {sec_name}\n\n테마 평균: **{sec_mean:+.2f}%**\n\n---\n**[🚀 테마 상승 주도주]**\n\n{stock_list_str}")
+            else:
+                st.info("📉 오늘 시장 전체가 하락장이라 뚜렷한 상승 주도 테마가 없습니다.")
             
             st.divider()
             
