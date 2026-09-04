@@ -1,4 +1,5 @@
 import os
+import re
 try:
     import FinanceDataReader as fdr
 except ImportError:
@@ -57,7 +58,7 @@ def get_stock_list():
 def load_korean_ai(): 
     return pipeline("sentiment-analysis", model="snunlp/KR-FinBert-SC")
 
-# ★ 공포와 탐욕 지수 계산 엔진 ★
+# 공포와 탐욕 지수 계산 엔진
 @st.cache_data(ttl=3600)
 def get_fear_and_greed_index():
     try:
@@ -169,12 +170,27 @@ def run_dashboard(ticker_code, company_display_name):
     rsi_status = "과매수 ⚠️" if latest_rsi >= 70 else "과매도 📉" if latest_rsi <= 30 else "중립"
 
     st.success(f"🔍 **{company_display_name}** ({ticker_code}) 개별 분석 완료")
+    
+    # 상단 요약 바
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("현재 주가", price_fmt)
     c2.metric("시가총액", mkt_cap_str)
     c3.metric("52주 최고", high52)
     c4.metric("52주 최저", low52)
     c5.metric("RSI (과열도)", f"{latest_rsi:.1f}", rsi_status)
+    
+    # ★ 추가 기능 1: AI 종목 한 줄 평 ★
+    trend_status = "상승세" if current_price > df['MA20'].iloc[-1] else "하락세"
+    macd_status = "매수세가 유입" if df['MACD'].iloc[-1] > df['Signal'].iloc[-1] else "매수 심리가 다소 위축"
+    
+    if latest_rsi >= 70:
+        ai_comment = f"현재 주가는 20일선 기준 **{trend_status}**이지만, 지표상 **단기 과열(과매수)** 구간입니다. 신규 매수보다는 관망이나 분할 매도를 고려해볼 수 있는 시점입니다."
+    elif latest_rsi <= 30:
+        ai_comment = f"현재 낙폭이 과대하여(과매도) **바닥권 반등**을 기대해볼 수 있는 구간입니다. {macd_status}되는지 관찰하며 분할 매수를 검토하기 좋습니다."
+    else:
+        ai_comment = f"현재 주가는 **{trend_status}**에 있으며, {macd_status}되는 무난한 흐름을 보이고 있습니다. 무리한 단타보다는 시장 추세를 따라가는 것이 좋습니다."
+        
+    st.info(f"🤖 **AI 한 줄 평:** {ai_comment}")
     st.divider()
 
     chart_config = {'displayModeBar': False, 'scrollZoom': False}
@@ -299,19 +315,6 @@ def run_dashboard(ticker_code, company_display_name):
                 fin_fig.update_yaxes(fixedrange=True)
                 fin_fig.update_layout(barmode='group', template='plotly_dark', height=450, yaxis_title=unit_str)
                 st.plotly_chart(fin_fig, use_container_width=True, config=chart_config)
-                
-                st.markdown(f"##### 📊 상세 재무 데이터 ({unit_str})")
-                disp_df = fin[['Total Revenue', 'Net Income']].copy()
-                disp_df.index = years
-                disp_df.columns = ['매출액', '당기순이익']
-                
-                def format_money(val):
-                    if pd.isna(val) or val == 0: return "N/A"
-                    return f"₩{int(val):,}" if is_korean else f"${int(val):,}"
-                    
-                disp_df['매출액'] = disp_df['매출액'].apply(format_money)
-                disp_df['당기순이익'] = disp_df['당기순이익'].apply(format_money)
-                st.dataframe(disp_df.T, use_container_width=True)
             else: 
                 st.info("재무 데이터를 제공하지 않습니다.")
         except: 
@@ -370,13 +373,50 @@ def run_dashboard(ticker_code, company_display_name):
 
     with tab5:
         st.subheader("🚀 시가총액 TOP 100 & 내일의 급등주 AI 스캐너")
-        st.markdown("한국거래소(KRX) 시가총액 상위 100개 종목의 실시간 데이터를 바탕으로, AI가 내일 상승 확률이 가장 높은 **TOP 10 종목**을 추출합니다.")
         
         krx_df = load_krx_data()
         if 'Marcap' in krx_df.columns:
             top100 = krx_df.sort_values(by='Marcap', ascending=False).head(100).reset_index(drop=True)
             top100.index = top100.index + 1
             
+            # ★ 추가 기능 4: 오늘 시장을 주도하는 핫(Hot) 섹터 랭킹 ★
+            st.markdown("#### 🔥 오늘 시장을 주도하는 핫(Hot) 섹터 랭킹")
+            st.markdown("한국 주식 시가총액 상위 100개 기업의 오늘 등락률을 산업군(섹터)별로 묶어, 가장 자금이 많이 몰린 테마를 분석합니다.")
+            
+            def get_sector_name(sector_str):
+                s = str(sector_str)
+                if s == 'nan' or not s: return '기타'
+                if any(k in s for k in ['소프트웨어', '컴퓨터', '반도체', '전자부품', '통신', 'IT']): return '💻 IT/반도체'
+                if any(k in s for k in ['자동차', '운송장비', '기계']): return '🚗 자동차/기계'
+                if any(k in s for k in ['화학', '의약품', '의료', '생물', '바이오']): return '💊 바이오/헬스'
+                if any(k in s for k in ['은행', '증권', '보험', '금융']): return '🏦 금융'
+                if any(k in s for k in ['방송', '출판', '영화', '플랫폼', '엔터']): return '📱 플랫폼/콘텐츠'
+                if any(k in s for k in ['음식료', '섬유', '의복', '유통', '소매']): return '🛒 소비재'
+                if any(k in s for k in ['철강', '금속', '비금속', '건설']): return '🧱 철강/건설'
+                if any(k in s for k in ['전기', '가스', '에너지']): return '⚡ 에너지/유틸리티'
+                return f"🏭 {s}"
+                
+            top100_sec = top100.copy()
+            top100_sec['섹터명'] = top100_sec['Sector'].apply(get_sector_name)
+            sec_trend = top100_sec.groupby('섹터명')['ChagesRatio'].mean().reset_index()
+            sec_trend = sec_trend.sort_values('ChagesRatio', ascending=False).reset_index(drop=True)
+            
+            colors_sec = ['#ef5350' if val > 0 else '#26a69a' if val < 0 else 'gray' for val in sec_trend['ChagesRatio']]
+            fig_sec = go.Figure(go.Bar(
+                x=sec_trend['섹터명'], 
+                y=sec_trend['ChagesRatio'],
+                marker_color=colors_sec,
+                text=sec_trend['ChagesRatio'].apply(lambda x: f"{x:+.2f}%"),
+                textposition='auto'
+            ))
+            fig_sec.update_layout(template='plotly_dark', height=350, margin=dict(t=20, b=0, l=0, r=0))
+            fig_sec.update_xaxes(fixedrange=True)
+            fig_sec.update_yaxes(fixedrange=True)
+            st.plotly_chart(fig_sec, use_container_width=True, config=chart_config)
+            
+            st.divider()
+            
+            st.markdown("#### 🤖 내일의 급등주 AI 스캐너")
             if st.button("🔍 상위 100종목 AI 스캔 시작 (약 15~20초 소요)", type="primary", use_container_width=True):
                 my_bar = st.progress(0, text="AI가 데이터를 분석 중입니다...")
                 ai_results = []
@@ -426,7 +466,7 @@ def run_dashboard(ticker_code, company_display_name):
                     st.error("데이터 수집 중 오류가 발생했습니다.")
             
             st.divider()
-            st.markdown("### 🏆 한국 주식 시가총액 순위 (1위 ~ 100위)")
+            st.markdown("#### 🏆 한국 주식 시가총액 순위 (1위 ~ 100위)")
             display_df = top100[['Code', 'Name', 'Close', 'ChagesRatio', 'Marcap']].copy()
             display_df.columns = ['종목코드', '종목명', '현재가', '등락률', '시가총액']
             display_df['현재가'] = display_df['현재가'].apply(lambda x: f"₩{int(x):,}")
@@ -498,6 +538,8 @@ if not selected_stock:
                 }
             ))
             fig_fgi.update_layout(height=350, margin=dict(t=60, b=20, l=20, r=20), template='plotly_dark')
+            fig_fgi.update_xaxes(fixedrange=True)
+            fig_fgi.update_yaxes(fixedrange=True)
             
             st.plotly_chart(fig_fgi, use_container_width=True, config={'displayModeBar': False})
             st.markdown(f"<h4 style='text-align: center; color: {fgi_color};'>{fgi_text}</h4>", unsafe_allow_html=True)
