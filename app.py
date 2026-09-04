@@ -174,7 +174,6 @@ def run_dashboard(ticker_code, company_display_name):
 
         with col2:
             st.subheader("📊 정밀 분석 차트")
-            st.caption("📌 **차트 범례**: 🟥/🟩 캔들(주가) | 🟧 **20일선(단기)** | 🔷 **60일선(중기)** | ⚪ **볼린저 밴드** | 🟣 **MACD** | 🔴 **시그널** | 📊 **거래량**")
             
             chart_df = df.tail(120).copy()
             d_str = chart_df.index.strftime('%Y-%m-%d')
