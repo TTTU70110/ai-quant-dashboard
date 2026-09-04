@@ -391,9 +391,9 @@ def run_dashboard(ticker_code, company_display_name):
             top100 = krx_df.sort_values(by='Marcap', ascending=False).head(100).reset_index(drop=True)
             top100.index = top100.index + 1
             
-            # ★ 완벽하게 개선된 직관적인 카드형 UI 디자인 ★
+            # ★ 완벽하게 개선된 초고밀도 테마 요약 카드 ★
             st.markdown("#### 🔥 오늘 시장을 주도하는 핫(Hot) 테마 Top 3")
-            st.markdown("오늘 시가총액 상위 100개 종목 중, **가장 강하게 상승하고 있는 3개 산업군과 그 상승을 이끄는 대장주**입니다.")
+            st.markdown("한국 시가총액 Top 100 종목 중, **시장에 돈이 가장 많이 몰린 테마 3개와 핵심 정보**를 요약합니다.")
             
             def get_sector_name(sector_str):
                 s = str(sector_str)
@@ -422,43 +422,71 @@ def run_dashboard(ticker_code, company_display_name):
             
             top100_sec['섹터명'] = top100_sec['Sector'].apply(get_sector_name)
             
-            sec_counts = top100_sec['섹터명'].value_counts()
-            valid_sectors = sec_counts[sec_counts >= 3].index
-            valid_top100 = top100_sec[top100_sec['섹터명'].isin(valid_sectors)]
+            # 통계 데이터 집계 (평균 등락률, 총 시총, 상승/보합/하락 종목 수)
+            sec_stats = []
+            for sec_name, group in top100_sec.groupby('섹터명'):
+                if len(group) >= 3: # 3종목 이상 테마만 인정
+                    mean_change = group['ChagesRatio'].mean()
+                    total_marcap = group['Marcap'].sum() / 1_000_000_000_000 # 조 단위
+                    up_cnt = len(group[group['ChagesRatio'] > 0])
+                    down_cnt = len(group[group['ChagesRatio'] < 0])
+                    flat_cnt = len(group[group['ChagesRatio'] == 0])
+                    
+                    sec_stats.append({
+                        '섹터명': sec_name,
+                        '평균등락률': mean_change,
+                        '총시총': total_marcap,
+                        '상승': up_cnt,
+                        '하락': down_cnt,
+                        '보합': flat_cnt,
+                        '종목데이터': group
+                    })
             
-            sec_trend = valid_top100.groupby('섹터명')['ChagesRatio'].mean().reset_index()
-            sec_trend = sec_trend.sort_values('ChagesRatio', ascending=False).reset_index(drop=True)
-            
-            hot_sectors = sec_trend[sec_trend['ChagesRatio'] > 0]
+            sec_df = pd.DataFrame(sec_stats).sort_values('평균등락률', ascending=False)
+            hot_sectors = sec_df[sec_df['평균등락률'] > 0]
             
             if not hot_sectors.empty:
                 top3_sectors = hot_sectors.head(3)
-                cols = st.columns(3) # 무조건 3분할로 고정하여 예쁘게 정렬
-                
+                cols = st.columns(3)
                 medals = ["🥇 1위", "🥈 2위", "🥉 3위"]
+                
                 for i, (idx, row) in enumerate(top3_sectors.iterrows()):
-                    sec_name = row['섹터명']
-                    sec_mean = row['ChagesRatio']
-                    sec_stocks = valid_top100[valid_top100['섹터명'] == sec_name].sort_values(by='ChagesRatio', ascending=False).head(3)
-                    
                     with cols[i]:
-                        # 독립된 카드(Box) 컨테이너 생성
                         with st.container(border=True):
-                            st.markdown(f"<h4 style='text-align: center; margin-bottom: 0px;'>{medals[i]}<br>{sec_name}</h4>", unsafe_allow_html=True)
+                            # 타이틀
+                            st.markdown(f"<h4 style='text-align: center; margin-bottom: 0px;'>{medals[i]} {row['섹터명']}</h4>", unsafe_allow_html=True)
                             
-                            # 퍼센트 색상 지정 (상승은 빨강, 하락은 파랑)
-                            color = "#ff4b4b" if sec_mean > 0 else "#00b4d8"
-                            st.markdown(f"<h2 style='text-align: center; color: {color}; margin-top: 10px; margin-bottom: 10px;'>{sec_mean:+.2f}%</h2>", unsafe_allow_html=True)
+                            # 등락률 메인 강조
+                            color = "#ff4b4b" if row['평균등락률'] > 0 else "#00b4d8"
+                            st.markdown(f"<h2 style='text-align: center; color: {color}; margin-top: 5px; margin-bottom: 5px;'>{row['평균등락률']:+.2f}%</h2>", unsafe_allow_html=True)
                             
-                            st.caption("🔥 주도주 Top 3")
+                            # 추가 정보 (시가총액, 상승/하락 비율)
+                            st.markdown(f"<div style='text-align: center; font-size: 0.9em; color: #aaaaaa;'>"
+                                        f"테마 체급: <b>{row['총시총']:,.0f}조 원</b><br>"
+                                        f"🔴 상승 <b>{row['상승']}</b> | ➖ 보합 <b>{row['보합']}</b> | 🔵 하락 <b>{row['하락']}</b>"
+                                        f"</div>", unsafe_allow_html=True)
                             
-                            # 데이터프레임 깔끔하게 포맷팅
-                            df_disp = sec_stocks[['Name', 'ChagesRatio']].copy()
-                            df_disp['ChagesRatio'] = df_disp['ChagesRatio'].apply(lambda x: f"🔺 {x:+.2f}%" if x > 0 else f"🔻 {x:+.2f}%" if x < 0 else f"{x:.2f}%")
-                            df_disp.columns = ['종목명', '등락률']
+                            st.divider()
+                            st.caption("🚀 주도주 Top 5")
                             
-                            # 인덱스 숨기고 폭을 꽉 채워서 표출
-                            st.dataframe(df_disp, hide_index=True, use_container_width=True)
+                            # 깔끔한 텍스트 기반 주도주 목록 (Top 5)
+                            group_df = row['종목데이터'].sort_values('ChagesRatio', ascending=False)
+                            stock_md = ""
+                            for _, s_row in group_df.head(5).iterrows():
+                                s_name = s_row['Name']
+                                s_price = s_row['Close']
+                                s_change = s_row['ChagesRatio']
+                                
+                                s_icon = "🔺" if s_change > 0 else "🔻" if s_change < 0 else "➖"
+                                s_color = "#ff4b4b" if s_change > 0 else "#00b4d8" if s_change < 0 else "gray"
+                                sign = "+" if s_change > 0 else ""
+                                
+                                stock_md += f"<div style='display: flex; justify-content: space-between; margin-bottom: 4px; font-size: 0.95em;'>" \
+                                            f"<span><b>{s_name}</b></span>" \
+                                            f"<span>₩{int(s_price):,} <span style='color:{s_color}; font-weight:bold;'>({s_icon} {sign}{s_change:.2f}%)</span></span>" \
+                                            f"</div>"
+                                
+                            st.markdown(stock_md, unsafe_allow_html=True)
             else:
                 st.info("📉 오늘 시장 전체가 하락장이라 뚜렷한 상승 주도 테마가 없습니다.")
             
