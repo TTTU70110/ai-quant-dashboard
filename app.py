@@ -1,9 +1,14 @@
 import os
+import sys
+
+# ★ 핵심: 네이버 차단을 우회하기 위해 KRX 공식 라이브러리(pykrx) 강제 설치 ★
 try:
     import FinanceDataReader as fdr
+    from pykrx import stock as krx_stock
 except ImportError:
-    os.system("pip install finance-datareader lxml > /dev/null 2>&1")
+    os.system(f"{sys.executable} -m pip install finance-datareader pykrx > /dev/null 2>&1")
     import FinanceDataReader as fdr
+    from pykrx import stock as krx_stock
 
 import streamlit as st
 import yfinance as yf
@@ -17,6 +22,7 @@ from sklearn.metrics import accuracy_score
 import urllib.parse
 import requests
 import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta
 
 st.set_page_config(layout="wide", page_title="투자 도우미 프로그램")
 
@@ -57,59 +63,82 @@ def get_stock_list():
 def load_korean_ai(): 
     return pipeline("sentiment-analysis", model="snunlp/KR-FinBert-SC")
 
+# ★ 네이버 차단 100% 우회: pykrx 라이브러리 사용 ★
 @st.cache_data(ttl=3600)
 def get_investor_data(stock_code):
     try:
         code_only = stock_code.split('.')[0]
-        today = pd.Timestamp.today().strftime('%Y-%m-%d')
-        start_date = (pd.Timestamp.today() - pd.Timedelta(days=20)).strftime('%Y-%m-%d')
         
-        price_df = fdr.DataReader(code_only, start_date, today).reset_index()
-        price_df = price_df[['Date', 'Close']].rename(columns={'Date': '날짜', 'Close': '종가'})
-        price_df['날짜'] = price_df['날짜'].dt.strftime('%Y-%m-%d')
+        # 오늘 날짜와 15일 전 날짜 세팅 (영업일 기준 10일을 뽑기 위함)
+        today_date = datetime.today()
+        start_date = today_date - timedelta(days=20)
         
-        url = f"https://m.stock.naver.com/api/stock/{code_only}/investor/trend"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        res = requests.get(url, headers=headers, timeout=5)
+        today_str = today_date.strftime("%Y%m%d")
+        start_str = start_date.strftime("%Y%m%d")
         
-        if res.status_code == 200:
-            data = res.json().get('investors', [])
-            if data:
-                inv_list = []
-                for item in data[:10]:
-                    inv_list.append({
-                        '날짜': item['bizdate'][:4] + "-" + item['bizdate'][4:6] + "-" + item['bizdate'][6:],
-                        '기관순매수': int(item.get('institution', 0)),
-                        '외국인순매수': int(item.get('foreigner', 0))
-                    })
-                inv_df = pd.DataFrame(inv_list)
-                merged_df = pd.merge(inv_df, price_df, on='날짜', how='left')
-                merged_df = merged_df[['날짜', '종가', '기관순매수', '외국인순매수']]
-                return merged_df
+        # pykrx를 이용해 한국거래소에서 직접 수급 데이터 가져오기 (종목별 투자자 순매수)
+        df_vol = krx_stock.get_market_trading_volume_by_date(start_str, today_str, code_only)
+        
+        if not df_vol.empty:
+            # 인덱스(날짜)를 컬럼으로 빼기
+            df_vol = df_vol.reset_index()
+            
+            # 컬럼명 맞추기: 기관합계, 외국인합계
+            # pykrx의 반환 컬럼명에 따라 안전하게 매핑
+            cols = list(df_vol.columns)
+            
+            # 주가 데이터 가져오기 (FDR 이용)
+            price_df = fdr.DataReader(code_only, start_date.strftime("%Y-%m-%d"), today_date.strftime("%Y-%m-%d")).reset_index()
+            price_df['Date'] = pd.to_datetime(price_df['Date'])
+            
+            res_list = []
+            for _, row in df_vol.iterrows():
+                date_obj = row['날짜']
+                date_str = date_obj.strftime("%Y-%m-%d")
+                
+                # 기관, 외국인 순매수 찾기 (컬럼명 유연 대응)
+                inst = row.get('기관합계', 0)
+                foreigner = row.get('외국인합계', 0)
+                
+                # 해당 날짜의 주가 찾기
+                close_price = 0
+                price_match = price_df[price_df['Date'] == date_obj]
+                if not price_match.empty:
+                    close_price = price_match.iloc[0]['Close']
+                    
+                res_list.append({
+                    '날짜': date_str,
+                    '종가': close_price,
+                    '기관순매수': int(inst),
+                    '외국인순매수': int(foreigner)
+                })
+            
+            res_df = pd.DataFrame(res_list)
+            # 최신 날짜가 위로 오게 정렬 후 10개 자르기
+            res_df = res_df.sort_values(by='날짜', ascending=False).head(10).reset_index(drop=True)
+            return res_df
+            
         return pd.DataFrame()
-    except:
+    except Exception as e:
         return pd.DataFrame()
 
-# ★ 신규: 공포와 탐욕 지수 계산 엔진 ★
+# ★ 공포와 탐욕 지수 계산 엔진 ★
 @st.cache_data(ttl=3600)
 def get_fear_and_greed_index():
     try:
         spy = yf.Ticker("SPY").history(period="1mo")
         vix = yf.Ticker("^VIX").history(period="1mo")
         
-        # SPY RSI 계산
         delta = spy['Close'].diff()
         gain = delta.where(delta > 0, 0).rolling(window=14).mean()
         loss = delta.where(delta < 0, 0).abs().rolling(window=14).mean()
         rs = gain / (loss + 1e-9)
         rsi = 100 - (100 / (1 + rs.iloc[-1]))
         
-        # VIX 환산 (VIX 10 = 탐욕 100, VIX 40 = 공포 0)
         current_vix = vix['Close'].iloc[-1]
         vix_score = 100 - ((current_vix - 10) / 30) * 100
         vix_score = max(0, min(100, vix_score))
         
-        # 최종 점수 (RSI 60%, VIX 40% 반영)
         fgi_score = (rsi * 0.6) + (vix_score * 0.4)
         return int(fgi_score)
     except:
@@ -215,7 +244,6 @@ def run_dashboard(ticker_code, company_display_name):
 
     chart_config = {'displayModeBar': False, 'scrollZoom': False}
 
-    # ★ 탭 레이아웃 (계좌 진단 삭제, 5개 탭으로 원복) ★
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📊 차트 & 뉴스", "🏢 재무 & 수급", "📈 시장 비교", "🧪 백테스트", "🚀 AI 스캐너"
     ])
@@ -342,13 +370,13 @@ def run_dashboard(ticker_code, company_display_name):
             st.warning("재무 데이터를 불러오는 중 오류가 발생했습니다.")
             
         st.divider()
-        st.subheader("👥 최근 10일 외국인/기관 매매 동향 (수급)")
+        st.subheader("👥 최근 10영업일 외국인/기관 매매 동향 (수급)")
         if is_korean:
-            with st.spinner("수급 데이터를 분석 중입니다..."):
+            with st.spinner("한국거래소(KRX) 공식 수급 데이터를 불러오는 중..."):
                 inv_df = get_investor_data(ticker_code)
                 if not inv_df.empty:
                     inv_df['종가'] = inv_df['종가'].apply(
-                        lambda x: f"₩{int(x):,}" if not pd.isna(x) else "-"
+                        lambda x: f"₩{int(x):,}" if float(x) > 0 else "-"
                     )
                     inv_df['기관순매수'] = inv_df['기관순매수'].apply(
                         lambda x: f"🔴 +{int(x):,}" if float(x) > 0 else f"🔵 {int(x):,}" if float(x) < 0 else "0"
@@ -493,7 +521,6 @@ selected_stock = st.selectbox(
     label_visibility="collapsed"
 )
 
-# ★ 사용자가 아무것도 검색하지 않은 메인 홈 화면일 때 '공포와 탐욕 지수' 계기판 표시 ★
 if not selected_stock:
     st.divider()
     
@@ -549,7 +576,6 @@ if not selected_stock:
             st.plotly_chart(fig_fgi, use_container_width=True, config={'displayModeBar': False})
             st.markdown(f"<h4 style='text-align: center; color: {fgi_color};'>{fgi_text}</h4>", unsafe_allow_html=True)
 
-# 검색어가 선택되면 대시보드 출력
 else:
     company_name = selected_stock.split(" (")[0]
     stock_code = selected_stock.split(" (")[1].replace(")", "")
