@@ -171,7 +171,6 @@ def run_dashboard(ticker_code, company_display_name):
 
     st.success(f"🔍 **{company_display_name}** ({ticker_code}) 개별 분석 완료")
     
-    # 상단 요약 바
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("현재 주가", price_fmt)
     c2.metric("시가총액", mkt_cap_str)
@@ -179,7 +178,6 @@ def run_dashboard(ticker_code, company_display_name):
     c4.metric("52주 최저", low52)
     c5.metric("RSI (과열도)", f"{latest_rsi:.1f}", rsi_status)
     
-    # ★ 추가 기능 1: AI 종목 한 줄 평 ★
     trend_status = "상승세" if current_price > df['MA20'].iloc[-1] else "하락세"
     macd_status = "매수세가 유입" if df['MACD'].iloc[-1] > df['Signal'].iloc[-1] else "매수 심리가 다소 위축"
     
@@ -257,12 +255,12 @@ def run_dashboard(ticker_code, company_display_name):
             
             fig.add_trace(go.Scatter(
                 x=d_str, y=chart_df['Upper_Band'], 
-                line=dict(color='rgba(255,255,255,0.3)', dash='dash'), name='볼린저 상한'
+                line=dict(color='rgba(255,255,255,0.3)', dash='dash'), name='볼린 상한'
             ), row=1, col=1)
             
             fig.add_trace(go.Scatter(
                 x=d_str, y=chart_df['Lower_Band'], 
-                line=dict(color='rgba(255,255,255,0.3)', dash='dash'), name='볼린저 하한'
+                line=dict(color='rgba(255,255,255,0.3)', dash='dash'), name='볼린 하한'
             ), row=1, col=1)
             
             fig.add_trace(go.Scatter(x=d_str, y=chart_df['MA20'], line=dict(color='orange'), name='20일선'), row=1, col=1)
@@ -379,7 +377,6 @@ def run_dashboard(ticker_code, company_display_name):
             top100 = krx_df.sort_values(by='Marcap', ascending=False).head(100).reset_index(drop=True)
             top100.index = top100.index + 1
             
-            # ★ 추가 기능 4: 오늘 시장을 주도하는 핫(Hot) 섹터 랭킹 ★
             st.markdown("#### 🔥 오늘 시장을 주도하는 핫(Hot) 섹터 랭킹")
             st.markdown("한국 주식 시가총액 상위 100개 기업의 오늘 등락률을 산업군(섹터)별로 묶어, 가장 자금이 많이 몰린 테마를 분석합니다.")
             
@@ -397,6 +394,18 @@ def run_dashboard(ticker_code, company_display_name):
                 return f"🏭 {s}"
                 
             top100_sec = top100.copy()
+            
+            # ★ KeyError 방지를 위한 안전망 코드 추가 ★
+            if 'Sector' not in top100_sec.columns:
+                try:
+                    krx_desc = fdr.StockListing('KRX-DESC')
+                    if 'Sector' in krx_desc.columns:
+                        top100_sec = pd.merge(top100_sec, krx_desc[['Code', 'Sector']], on='Code', how='left')
+                    else:
+                        top100_sec['Sector'] = '기타'
+                except:
+                    top100_sec['Sector'] = '기타'
+            
             top100_sec['섹터명'] = top100_sec['Sector'].apply(get_sector_name)
             sec_trend = top100_sec.groupby('섹터명')['ChagesRatio'].mean().reset_index()
             sec_trend = sec_trend.sort_values('ChagesRatio', ascending=False).reset_index(drop=True)
@@ -483,7 +492,7 @@ selected_stock = st.selectbox(
     label="🔍 종목 검색",
     options=stock_options,
     index=None, 
-    placeholder="여기를 클릭하고 종목명(예: 삼성) 또는 코드(AAPL)를 입력하세요...",
+    placeholder="🔍 종목명 검색 (엔터 오류 방지를 위해 마우스 클릭을 권장합니다!)",
     label_visibility="collapsed"
 )
 
