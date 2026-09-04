@@ -54,6 +54,7 @@ def get_stock_list():
 def load_korean_ai(): 
     return pipeline("sentiment-analysis", model="snunlp/KR-FinBert-SC")
 
+# ★ 잘림 방지: 수급 데이터 가져오는 부분 코드를 짧게 쪼개서 정리했습니다. ★
 @st.cache_data(ttl=3600)
 def get_investor_data(stock_code):
     try:
@@ -63,6 +64,41 @@ def get_investor_data(stock_code):
         res = requests.get(url, headers=headers, timeout=5)
         dfs = pd.read_html(res.text, encoding='euc-kr')
         
+        date_pattern = r"^\d{4}\.\d{2}\.\d{2}$" # 날짜 형식 패턴을 따로 빼서 짧게 만듦
+        
         for df in dfs:
             if len(df.columns) >= 7:
-                if df.iloc[:, 0].astype(str).str.match(r'
+                date_col = df.iloc[:, 0].astype(str)
+                if date_col.str.match(date_pattern, na=False).any():
+                    valid_df = df[date_col.str.match(date_pattern, na=False)]
+                    res_df = valid_df.iloc[:, [0, 1, 5, 6]].copy()
+                    res_df.columns = ['날짜', '종가', '기관순매수', '외국인순매수']
+                    return res_df.head(10)
+        return pd.DataFrame()
+    except:
+        return pd.DataFrame()
+
+# --- [2. 핵심 분석 대시보드 로직] ---
+def run_dashboard(ticker_code, company_display_name):
+    stock = yf.Ticker(ticker_code)
+    df = stock.history(period="2y")
+    
+    if df.empty or len(df) < 30:
+        st.warning("데이터를 불러오지 못했습니다. 종목명이나 코드가 정확한지 확인해주세요.")
+        return
+        
+    info = stock.info
+    is_korean = ticker_code.endswith('.KS') or ticker_code.endswith('.KQ')
+    currency = "₩" if is_korean else "$"
+    current_price = df['Close'].iloc[-1]
+    
+    # 보조 지표 계산
+    df['MA20'] = df['Close'].rolling(20).mean()
+    df['MA60'] = df['Close'].rolling(60).mean()
+    df['STD20'] = df['Close'].rolling(20).std()
+    df['Upper_Band'] = df['MA20'] + (df['STD20'] * 2)
+    df['Lower_Band'] = df['MA20'] - (df['STD20'] * 2)
+    
+    delta = df['Close'].diff()
+    rs = (delta.where(delta > 0, 0)).rolling(14).mean() / ((delta.where(delta < 0, 0)).rolling(14).mean().abs() + 1e-9)
+    df['RSI'] = 100 - (
