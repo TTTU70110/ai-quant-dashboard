@@ -83,6 +83,48 @@ def get_fear_and_greed_index():
     except:
         return 50
 
+# ★ 신규: ETF 목록 및 구성종목 파싱 엔진 ★
+@st.cache_data(ttl=86400)
+def get_etf_list():
+    try:
+        etf_df = fdr.StockListing('ETF/KR')
+        if not etf_df.empty:
+            return etf_df.head(100) # 상위 100개만 추출
+    except:
+        pass
+    
+    # 만약 fdr 오류 시 비상용 하드코딩 리스트 반환
+    return pd.DataFrame([
+        {'Symbol': '069500', 'Name': 'KODEX 200', 'Price': 35000},
+        {'Symbol': '360750', 'Name': 'TIGER 미국S&P500', 'Price': 15000},
+        {'Symbol': '133690', 'Name': 'TIGER 미국나스닥100', 'Price': 80000},
+        {'Symbol': '305540', 'Name': 'TIGER 2차전지테마', 'Price': 20000},
+        {'Symbol': '091160', 'Name': 'KODEX 반도체', 'Price': 30000},
+    ])
+
+@st.cache_data(ttl=3600)
+def get_kr_etf_constituents(code):
+    try:
+        url = f"https://finance.naver.com/item/main.naver?code={code}"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        res = requests.get(url, headers=headers, timeout=5)
+        res.encoding = 'euc-kr' # 한글 깨짐 방지
+        
+        # '구성종목' 이라는 단어 근처의 표(table)를 찾아 종목명만 쏙쏙 뽑아내는 정규식
+        block = re.search(r'구성종목.*?</table>', res.text, re.DOTALL)
+        if block:
+            names = re.findall(r'<a href="/item/main.naver\?code=\w+"[^>]*>(.*?)</a>', block.group(0))
+            # 중복 제거 (순서 유지)
+            unique_names = []
+            for n in names:
+                if n not in unique_names:
+                    unique_names.append(n)
+            return unique_names
+        return []
+    except:
+        return []
+
+
 # --- [2. 핵심 분석 대시보드 로직] ---
 def run_dashboard(ticker_code, company_display_name):
     stock = yf.Ticker(ticker_code)
@@ -425,7 +467,6 @@ def run_dashboard(ticker_code, company_display_name):
             valid_sectors = sec_counts[sec_counts >= 3].index
             valid_top100 = top100_sec[top100_sec['섹터명'].isin(valid_sectors)]
             
-            # ★ 핵심 로직 추가: '기타' 테마를 랭킹에서 완전히 제거 ★
             valid_top100 = valid_top100[valid_top100['섹터명'] != '기타']
             
             sec_stats = []
@@ -558,7 +599,8 @@ def run_dashboard(ticker_code, company_display_name):
         else:
             st.warning("한국거래소(KRX) 데이터를 불러올 수 없습니다.")
 
-# --- [3. 메인 실행 및 화면 레이아웃] ---
+
+# --- [3. 메인 화면 레이아웃 (종목 검색 & 홈 탭)] ---
 stock_options = get_stock_list()
 
 selected_stock = st.selectbox(
@@ -569,63 +611,134 @@ selected_stock = st.selectbox(
     label_visibility="collapsed"
 )
 
+# ★ 아무 종목도 검색하지 않았을 때의 메인 홈(Home) 화면 ★
 if not selected_stock:
     st.divider()
     
-    with st.container():
-        col_space1, col_gauge, col_space2 = st.columns([1, 2, 1])
-        
-        with col_gauge:
-            fgi_score = get_fear_and_greed_index()
-            
-            if fgi_score <= 25:
-                fgi_color = "#ef5350"
-                fgi_text = "극도의 공포 (Extreme Fear) - 저가 매수 찬스일 수 있습니다."
-            elif fgi_score <= 45:
-                fgi_color = "#ffa726"
-                fgi_text = "공포 (Fear) - 시장이 움츠러들어 있습니다."
-            elif fgi_score <= 55:
-                fgi_color = "#ffca28"
-                fgi_text = "중립 (Neutral) - 관망세가 짙은 시장입니다."
-            elif fgi_score <= 75:
-                fgi_color = "#9ccc65"
-                fgi_text = "탐욕 (Greed) - 시장이 달아오르고 있습니다."
-            else:
-                fgi_color = "#66bb6a"
-                fgi_text = "극도의 탐욕 (Extreme Greed) - 차익 실현을 고려할 때입니다."
+    # 메인 화면을 2개의 탭으로 분리
+    home_tab1, home_tab2 = st.tabs(["🏠 시장 공포·탐욕 지수", "🛒 인기 ETF 탐색기 (신규)"])
+    
+    with home_tab1:
+        with st.container():
+            col_space1, col_gauge, col_space2 = st.columns([1, 2, 1])
+            with col_gauge:
+                fgi_score = get_fear_and_greed_index()
                 
-            fig_fgi = go.Figure(go.Indicator(
-                mode = "gauge+number",
-                value = fgi_score,
-                domain = {'x': [0, 1], 'y': [0, 1]},
-                title = {'text': "🔥 오늘의 시장 공포·탐욕 지수 (AI 종합)", 'font': {'size': 20, 'color': 'white'}},
-                gauge = {
-                    'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': "white"},
-                    'bar': {'color': fgi_color},
-                    'bgcolor': "rgba(255,255,255,0.05)",
-                    'borderwidth': 2,
-                    'bordercolor': "gray",
-                    'steps': [
-                        {'range': [0, 25], 'color': "rgba(239, 83, 80, 0.3)"},
-                        {'range': [25, 45], 'color': "rgba(255, 167, 38, 0.3)"},
-                        {'range': [45, 55], 'color': "rgba(255, 202, 40, 0.3)"},
-                        {'range': [55, 75], 'color': "rgba(156, 204, 101, 0.3)"},
-                        {'range': [75, 100], 'color': "rgba(102, 187, 106, 0.3)"}
-                    ],
-                    'threshold': {
-                        'line': {'color': "white", 'width': 4},
-                        'thickness': 0.75,
-                        'value': fgi_score
+                if fgi_score <= 25:
+                    fgi_color = "#ef5350"
+                    fgi_text = "극도의 공포 (Extreme Fear) - 저가 매수 찬스일 수 있습니다."
+                elif fgi_score <= 45:
+                    fgi_color = "#ffa726"
+                    fgi_text = "공포 (Fear) - 시장이 움츠러들어 있습니다."
+                elif fgi_score <= 55:
+                    fgi_color = "#ffca28"
+                    fgi_text = "중립 (Neutral) - 관망세가 짙은 시장입니다."
+                elif fgi_score <= 75:
+                    fgi_color = "#9ccc65"
+                    fgi_text = "탐욕 (Greed) - 시장이 달아오르고 있습니다."
+                else:
+                    fgi_color = "#66bb6a"
+                    fgi_text = "극도의 탐욕 (Extreme Greed) - 차익 실현을 고려할 때입니다."
+                    
+                fig_fgi = go.Figure(go.Indicator(
+                    mode = "gauge+number",
+                    value = fgi_score,
+                    domain = {'x': [0, 1], 'y': [0, 1]},
+                    title = {'text': "🔥 오늘의 시장 공포·탐욕 지수 (AI 종합)", 'font': {'size': 20, 'color': 'white'}},
+                    gauge = {
+                        'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': "white"},
+                        'bar': {'color': fgi_color},
+                        'bgcolor': "rgba(255,255,255,0.05)",
+                        'borderwidth': 2,
+                        'bordercolor': "gray",
+                        'steps': [
+                            {'range': [0, 25], 'color': "rgba(239, 83, 80, 0.3)"},
+                            {'range': [25, 45], 'color': "rgba(255, 167, 38, 0.3)"},
+                            {'range': [45, 55], 'color': "rgba(255, 202, 40, 0.3)"},
+                            {'range': [55, 75], 'color': "rgba(156, 204, 101, 0.3)"},
+                            {'range': [75, 100], 'color': "rgba(102, 187, 106, 0.3)"}
+                        ],
+                        'threshold': {
+                            'line': {'color': "white", 'width': 4},
+                            'thickness': 0.75,
+                            'value': fgi_score
+                        }
                     }
-                }
-            ))
-            fig_fgi.update_layout(height=350, margin=dict(t=60, b=20, l=20, r=20), template='plotly_dark')
-            fig_fgi.update_xaxes(fixedrange=True)
-            fig_fgi.update_yaxes(fixedrange=True)
+                ))
+                fig_fgi.update_layout(height=350, margin=dict(t=60, b=20, l=20, r=20), template='plotly_dark')
+                fig_fgi.update_xaxes(fixedrange=True)
+                fig_fgi.update_yaxes(fixedrange=True)
+                
+                st.plotly_chart(fig_fgi, use_container_width=True, config={'displayModeBar': False})
+                st.markdown(f"<h4 style='text-align: center; color: {fgi_color};'>{fgi_text}</h4>", unsafe_allow_html=True)
+                
+    # ★ 신규 추가된 ETF 탐색기 화면 ★
+    with home_tab2:
+        st.subheader("🛒 한국 상장 인기 ETF 탐색기")
+        st.markdown("다양한 테마와 지수를 추종하는 ETF 목록입니다. **원하는 ETF를 선택하면 내부에 어떤 주식들이 담겨있는지(구성 종목) 바로 확인**할 수 있습니다.")
+        
+        etf_df = get_etf_list()
+        
+        if not etf_df.empty:
+            etf_options = [f"{row['Name']} ({row['Symbol']})" for _, row in etf_df.iterrows()]
             
-            st.plotly_chart(fig_fgi, use_container_width=True, config={'displayModeBar': False})
-            st.markdown(f"<h4 style='text-align: center; color: {fgi_color};'>{fgi_text}</h4>", unsafe_allow_html=True)
+            selected_etf = st.selectbox(
+                "💡 분석할 ETF를 검색하거나 선택하세요:", 
+                options=etf_options,
+                index=None,
+                placeholder="클릭하여 ETF를 선택하세요 (예: TIGER 미국S&P500)"
+            )
+            
+            if selected_etf:
+                e_name = selected_etf.split(" (")[0]
+                e_code = selected_etf.split(" (")[1].replace(")", "")
+                
+                c_cols1, c_cols2 = st.columns([1, 1.5])
+                
+                with c_cols1:
+                    st.markdown(f"#### 🎁 [{e_name}] 구성 종목 Top 10")
+                    with st.spinner("구성 종목을 불러오는 중..."):
+                        const_list = get_kr_etf_constituents(e_code)
+                        if const_list:
+                            # 현금성 자산 텍스트 필터링
+                            clean_list = [c for c in const_list if "현금" not in c and "예금" not in c]
+                            for idx, c in enumerate(clean_list[:10]):
+                                st.markdown(f"**{idx+1}.** {c}")
+                        else:
+                            st.info("해당 ETF는 상세 구성 종목을 제공하지 않거나, 원자재 등 단일 지수 추종 상품입니다.")
+                            
+                with c_cols2:
+                    st.markdown("#### 📊 최근 1년 수익률 차트")
+                    with st.spinner("차트를 불러오는 중..."):
+                        e_hist = yf.Ticker(f"{e_code}.KS").history(period="1y")
+                        if not e_hist.empty:
+                            e_hist = e_hist.dropna(subset=['Close'])
+                            fig_e = go.Figure()
+                            fig_e.add_trace(go.Scatter(x=e_hist.index.strftime('%Y-%m-%d'), y=e_hist['Close'], fill='tozeroy', line=dict(color='#ab47bc')))
+                            fig_e.update_layout(template='plotly_dark', height=350, margin=dict(l=0, r=0, t=10, b=0))
+                            fig_e.update_xaxes(fixedrange=True)
+                            fig_e.update_yaxes(fixedrange=True)
+                            st.plotly_chart(fig_e, use_container_width=True, config={'displayModeBar': False})
+                        else:
+                            st.warning("차트 데이터를 불러올 수 없습니다.")
+            
+            st.divider()
+            st.markdown("#### 📋 국내 상장 ETF Top 100 전체 목록")
+            
+            disp_etf = etf_df.copy()
+            cols_to_show = []
+            if 'Symbol' in disp_etf.columns: cols_to_show.append('Symbol')
+            if 'Name' in disp_etf.columns: cols_to_show.append('Name')
+            if 'Price' in disp_etf.columns:
+                disp_etf['Price'] = disp_etf['Price'].apply(lambda x: f"₩{int(x):,}" if pd.notnull(x) else "-")
+                cols_to_show.append('Price')
+                
+            disp_etf = disp_etf[cols_to_show]
+            disp_etf.columns = ['종목코드', 'ETF명', '현재가'][:len(cols_to_show)]
+            
+            st.dataframe(disp_etf, use_container_width=True, hide_index=True)
 
+# 검색어가 선택된 후 개별 종목 분석 대시보드 출력
 else:
     company_name = selected_stock.split(" (")[0]
     stock_code = selected_stock.split(" (")[1].replace(")", "")
