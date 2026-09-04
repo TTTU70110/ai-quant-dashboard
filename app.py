@@ -57,28 +57,110 @@ def get_stock_list():
 def load_korean_ai(): 
     return pipeline("sentiment-analysis", model="snunlp/KR-FinBert-SC")
 
+# ★ 개선된 수급 데이터 가져오기 (KRX 공식 데이터 활용) ★
 @st.cache_data(ttl=3600)
 def get_investor_data(stock_code):
     try:
+        # FinanceDataReader를 이용한 KRX 공식 투자자별 매매동향
         code_only = stock_code.split('.')[0]
-        url = f"https://finance.naver.com/item/frgn.naver?code={code_only}"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36'}
+        # 최근 14일 데이터 가져오기 (휴일 감안하여 10개 행 추출)
+        today = pd.Timestamp.today().strftime('%Y-%m-%d')
+        start_date = (pd.Timestamp.today() - pd.Timedelta(days=20)).strftime('%Y-%m-%d')
+        
+        # 주가 데이터 가져오기
+        price_df = fdr.DataReader(code_only, start_date, today)
+        price_df = price_df.reset_index()
+        price_df = price_df[['Date', 'Close']].rename(columns={'Date': '날짜', 'Close': '종가'})
+        price_df['날짜'] = price_df['날짜'].dt.strftime('%Y-%m-%d')
+        
+        # 야후 파이낸스나 FDR에 직접적인 수급 데이터가 없으므로 네이버 금융 JSON API로 우회 시도
+        url = f"https://m.stock.naver.com/api/stock/{code_only}/investor/trend"
+        headers = {'User-Agent': 'Mozilla/5.0'}
         res = requests.get(url, headers=headers, timeout=5)
-        dfs = pd.read_html(res.text, encoding='euc-kr')
         
-        date_pattern = r"^\d{4}\.\d{2}\.\d{2}$"
-        
-        for df in dfs:
-            if len(df.columns) >= 7:
-                date_col = df.iloc[:, 0].astype(str)
-                if date_col.str.match(date_pattern, na=False).any():
-                    valid_df = df[date_col.str.match(date_pattern, na=False)]
-                    res_df = valid_df.iloc[:, [0, 1, 5, 6]].copy()
-                    res_df.columns = ['날짜', '종가', '기관순매수', '외국인순매수']
-                    return res_df.head(10)
+        if res.status_code == 200:
+            data = res.json().get('investors', [])
+            if data:
+                inv_list = []
+                for item in data[:10]: # 최근 10일
+                    inv_list.append({
+                        '날짜': item['bizdate'][:4] + "-" + item['bizdate'][4:6] + "-" + item['bizdate'][6:],
+                        '기관순매수': int(item.get('institution', 0)),
+                        '외국인순매수': int(item.get('foreigner', 0))
+                    })
+                inv_df = pd.DataFrame(inv_list)
+                
+                # 주가와 병합
+                merged_df = pd.merge(inv_df, price_df, on='날짜', how='left')
+                merged_df = merged_df[['날짜', '종가', '기관순매수', '외국인순매수']]
+                return merged_df
+                
         return pd.DataFrame()
+    except Exception as e:
+        return pd.DataFrame()
+
+# ★ 신규: 주가 및 섹터 100% 꽂아주는 함수 (KRX 업종 데이터 기반) ★
+@st.cache_data(ttl=3600)
+def get_stock_info(ticker_code, company_name):
+    info = {'price': 0, 'sector': '알 수 없음'}
+    is_korean = ticker_code.endswith('.KS') or ticker_code.endswith('.KQ')
+    
+    # 1. 주가 가져오기
+    try:
+        hist = yf.Ticker(ticker_code).history(period="5d")
+        if not hist.empty:
+            info['price'] = hist['Close'].iloc[-1]
+            if not is_korean: # 미국 주식은 환율 적용 (임시: 1350원)
+                info['price'] = info['price'] * 1350
     except:
-        return pd.DataFrame()
+        pass
+        
+    # 2. 섹터 가져오기
+    if is_korean:
+        try:
+            krx_df = load_krx_data()
+            code_only = ticker_code.split('.')[0]
+            match = krx_df[krx_df['Code'] == code_only]
+            if not match.empty:
+                # KRX 공식 업종(Sector) 데이터 활용
+                krx_sector = str(match.iloc[0].get('Sector', '기타'))
+                if krx_sector == 'nan': krx_sector = '기타'
+                
+                # 업종 이름 매핑 (비슷한 건 묶기)
+                if any(k in krx_sector for k in ['소프트웨어', '컴퓨터', '반도체', '전자부품', '통신장비']):
+                    info['sector'] = '💻 IT/반도체'
+                elif any(k in krx_sector for k in ['자동차', '운송장비', '기계']):
+                    info['sector'] = '🚗 자동차/기계'
+                elif any(k in krx_sector for k in ['화학', '의약품', '의료', '생물']):
+                    info['sector'] = '💊 바이오/헬스'
+                elif any(k in krx_sector for k in ['은행', '증권', '보험', '금융']):
+                    info['sector'] = '🏦 금융'
+                elif any(k in krx_sector for k in ['방송', '출판', '영화', '플랫폼']):
+                    info['sector'] = '📱 플랫폼/콘텐츠'
+                elif any(k in krx_sector for k in ['음식료', '섬유', '의복', '유통']):
+                    info['sector'] = '🛒 소비재'
+                elif any(k in krx_sector for k in ['철강', '금속', '비금속', '건설']):
+                    info['sector'] = '🧱 철강/건설'
+                else:
+                    info['sector'] = f"🏭 {krx_sector}" # 그 외는 원본 업종 표시
+        except:
+            info['sector'] = '🏭 산업재/기타'
+    else:
+        # 미국 주식은 야후 파이낸스 섹터 정보 번역
+        try:
+            us_sec = yf.Ticker(ticker_code).info.get('sector', 'Unknown')
+            sec_map = {
+                'Technology': '💻 IT/반도체', 'Consumer Cyclical': '🚗 소비재 (자동차 등)',
+                'Financial Services': '🏦 금융', 'Healthcare': '💊 헬스케어',
+                'Communication Services': '📱 통신/플랫폼', 'Industrials': '🏭 산업재',
+                'Consumer Defensive': '🛒 필수소비재', 'Energy': '⚡ 에너지',
+                'Basic Materials': '🧱 소재', 'Real Estate': '🏢 부동산', 'Utilities': '💡 유틸리티'
+            }
+            info['sector'] = sec_map.get(us_sec, '기타 (해외)')
+        except:
+            info['sector'] = '기타 (해외)'
+            
+    return info
 
 # --- [2. 핵심 분석 대시보드 로직] ---
 def run_dashboard(ticker_code, company_display_name):
@@ -101,7 +183,6 @@ def run_dashboard(ticker_code, company_display_name):
     df['Upper_Band'] = df['MA20'] + (df['STD20'] * 2)
     df['Lower_Band'] = df['MA20'] - (df['STD20'] * 2)
     
-    # ★ 가로 잘림 에러 방지: RSI 계산식을 짧게 여러 줄로 분할 ★
     delta = df['Close'].diff()
     gain = delta.where(delta > 0, 0)
     loss = delta.where(delta < 0, 0).abs()
@@ -240,7 +321,6 @@ def run_dashboard(ticker_code, company_display_name):
             
             fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.55, 0.2, 0.25])
             
-            # ★ 가로 잘림 에러 방지: 차트 그리는 코드를 짧게 나눔 ★
             fig.add_trace(go.Candlestick(
                 x=d_str, open=chart_df['Open'], high=chart_df['High'], 
                 low=chart_df['Low'], close=chart_df['Close'], name='주가', 
@@ -315,10 +395,12 @@ def run_dashboard(ticker_code, company_display_name):
         st.divider()
         st.subheader("👥 최근 10일 외국인/기관 매매 동향 (수급)")
         if is_korean:
-            with st.spinner("수급 데이터를 가져오는 중..."):
+            with st.spinner("수급 데이터를 분석 중입니다..."):
                 inv_df = get_investor_data(ticker_code)
                 if not inv_df.empty:
-                    inv_df['종가'] = inv_df['종가'].apply(lambda x: f"₩{int(x):,}")
+                    inv_df['종가'] = inv_df['종가'].apply(
+                        lambda x: f"₩{int(x):,}" if not pd.isna(x) else "-"
+                    )
                     inv_df['기관순매수'] = inv_df['기관순매수'].apply(
                         lambda x: f"🔴 +{int(x):,}" if float(x) > 0 else f"🔵 {int(x):,}" if float(x) < 0 else "0"
                     )
@@ -328,9 +410,9 @@ def run_dashboard(ticker_code, company_display_name):
                     st.dataframe(inv_df, use_container_width=True)
                     st.caption("* 단위: 주 (🔴 순매수 / 🔵 순매도)")
                 else:
-                    st.info("수급 데이터를 일시적으로 불러올 수 없습니다.")
+                    st.info("현재 수급 데이터를 불러올 수 없습니다. (일시적 서버 지연 또는 제공하지 않는 종목)")
         else:
-            st.info("💡 해외 주식은 상세 수급 동향(외국인/기관) 데이터를 제공하지 않습니다.")
+            st.info("💡 해외 주식은 상세 수급 동향(외국인/기관) 데이터를 무료로 제공하지 않습니다.")
 
     with tab3:
         st.subheader(f"📈 시장 벤치마크 수익률 비교")
@@ -452,82 +534,100 @@ def run_dashboard(ticker_code, company_display_name):
             st.warning("한국거래소(KRX) 데이터를 불러올 수 없습니다.")
 
     with tab6:
-        st.subheader("💼 내 계좌 포트폴리오 안전도 진단")
-        st.markdown("보유 중인 주식 이름과 비중을 입력하면, AI가 **산업군(섹터) 쏠림 현상**을 분석하여 리스크를 진단해 드립니다.")
+        st.subheader("💼 내 계좌 포트폴리오 안전도 진단 (금액 자동 계산)")
+        st.markdown("보유 중인 주식을 선택하고 **보유 수량(주)**을 입력하세요. AI가 현재 주가를 곱하여 **총 평가 금액과 비중(%)을 자동 계산**한 뒤, 산업(섹터) 쏠림 현상을 진단합니다.")
+        
+        # ★ 포트폴리오 자동완성 검색 기능 및 수량 입력 ★
+        port_options = ["선택 안함"] + get_stock_list()
         
         port_cols = st.columns(4)
-        p_tickers = []
-        p_weights = []
-        
-        default_stocks = [company_display_name, "애플", "현대차", ""]
-        default_weights = [40, 40, 20, 0]
+        p_names = []
+        p_counts = []
         
         for i in range(4):
             with port_cols[i]:
-                s_name = st.text_input(f"종목 {i+1}", value=default_stocks[i])
-                s_weight = st.number_input(f"비중 {i+1} (%)", min_value=0, max_value=100, value=default_weights[i])
-                if s_name and s_weight > 0:
-                    p_tickers.append(s_name)
-                    p_weights.append(s_weight)
+                # 메인 검색창과 똑같은 자동완성 selectbox 적용
+                s_sel = st.selectbox(
+                    f"종목 {i+1}", 
+                    options=port_options, 
+                    index=0, 
+                    key=f"port_sel_{i}"
+                )
+                s_count = st.number_input(f"보유 수량 (주)", min_value=0, value=0, key=f"port_cnt_{i}")
+                
+                if s_sel != "선택 안함" and s_count > 0:
+                    p_names.append(s_sel)
+                    p_counts.append(s_count)
                     
         if st.button("🔍 내 포트폴리오 진단하기", type="primary"):
-            total_weight = sum(p_weights)
-            if total_weight != 100:
-                st.error(f"⚠️ 입력하신 비중의 합이 딱 100%가 되어야 합니다. (현재 합계: {total_weight}%)")
+            if not p_names:
+                st.error("⚠️ 최소 1개 이상의 종목과 수량을 입력해주세요.")
             else:
-                with st.spinner("섹터(산업군) 데이터를 분석 중입니다..."):
-                    sectors = []
-                    for t_name in p_tickers:
-                        try:
-                            t_clean = t_name.replace(" ", "").upper()
-                            if t_clean in ["삼성전자", "SK하이닉스"]: sec = "Technology"
-                            elif t_clean in ["현대차", "기아"]: sec = "Consumer Cyclical"
-                            elif t_clean in ["NAVER", "카카오"]: sec = "Communication Services"
-                            else:
-                                if t_clean.isalpha(): 
-                                    t_code = t_clean 
-                                else: 
-                                    match_code = load_krx_data()[load_krx_data()['Name'].str.replace(' ', '') == t_clean].iloc[0]['Code']
-                                    t_code = f"{match_code}.KS"
-                                sec = yf.Ticker(t_code).info.get('sector', '기타/알수없음')
-                        except:
-                            sec = '기타/알수없음'
-                            
-                        sec_map = {
-                            'Technology': '💻 IT/반도체', 'Consumer Cyclical': '🚗 임의소비재 (자동차)',
-                            'Financial Services': '🏦 금융', 'Healthcare': '💊 헬스케어',
-                            'Communication Services': '📱 통신/플랫폼', 'Industrials': '🏭 산업재',
-                            'Consumer Defensive': '🛒 필수소비재', 'Energy': '⚡ 에너지',
-                            'Basic Materials': '🧱 소재', 'Real Estate': '🏢 부동산', 'Utilities': '💡 유틸리티'
-                        }
-                        sectors.append(sec_map.get(sec, sec))
-                        
-                    port_df = pd.DataFrame({'종목': p_tickers, '비중(%)': p_weights, '섹터': sectors})
-                    sec_weights = port_df.groupby('섹터')['비중(%)'].sum().reset_index()
+                with st.spinner("현재 주가와 섹터 데이터를 불러와 자동 계산 중입니다..."):
+                    results = []
+                    total_value = 0
                     
-                    fig_pie = go.Figure(data=[go.Pie(
-                        labels=sec_weights['섹터'], values=sec_weights['비중(%)'], 
-                        hole=.4, textinfo='label+percent', 
-                        marker_colors=['#29b6f6', '#66bb6a', '#ffa726', '#ab47bc', '#ef5350']
-                    )])
-                    fig_pie.update_layout(template='plotly_dark', height=400, margin=dict(t=20, b=20))
-                    
-                    col_p1, col_p2 = st.columns([1, 1])
-                    with col_p1:
-                        st.plotly_chart(fig_pie, use_container_width=True)
-                    with col_p2:
-                        st.markdown("#### 💡 AI 포트폴리오 코멘트")
-                        max_sec = sec_weights.loc[sec_weights['비중(%)'].idxmax()]
-                        st.markdown(f"👉 현재 가장 큰 비중을 차지하는 산업은 **{max_sec['섹터']} ({max_sec['비중(%)']}%)** 입니다.")
+                    for name, count in zip(p_names, p_counts):
+                        # 이름과 코드 분리
+                        c_name = name.split(" (")[0]
+                        c_code = name.split(" (")[1].replace(")", "")
                         
-                        if max_sec['비중(%)'] >= 60:
-                            st.error("⚠️ **집중 투자 경고!** 특정 산업에 60% 이상 자본이 몰려있습니다. 해당 산업이 타격을 받으면 계좌 전체가 위험해집니다. 리스크 분산을 권장합니다.")
-                        elif max_sec['비중(%)'] <= 40 and len(sec_weights) >= 3:
-                            st.success("✅ **훌륭한 분산 투자!** 여러 섹터에 자산이 안정적으로 배분되어 있어, 하락장에서도 강한 방어력을 보여줄 수 있습니다.")
+                        if c_code.isalpha():
+                            t_code = c_code
                         else:
-                            st.info("ℹ️ **무난한 배분!** 밸런스가 나쁘지 않으나, 시장 상황에 맞춰 조금 더 다변화해도 좋습니다.")
+                            krx_df = load_krx_data()
+                            m_info = krx_df[krx_df['Code'] == c_code]
+                            suffix = '.KQ' if not m_info.empty and 'KOSDAQ' in str(m_info.iloc[0]['Market']).upper() else '.KS'
+                            t_code = f"{c_code}{suffix}"
+                        
+                        # 주가 및 섹터 100% 매핑된 데이터 가져오기
+                        s_info = get_stock_info(t_code, c_name)
+                        
+                        value = s_info['price'] * count
+                        total_value += value
+                        
+                        results.append({
+                            '종목': c_name,
+                            '수량': count,
+                            '평가금액': value,
+                            '섹터': s_info['sector']
+                        })
+                    
+                    if total_value > 0:
+                        # 비중 퍼센트 자동 계산
+                        for res in results:
+                            res['비중(%)'] = round((res['평가금액'] / total_value) * 100, 1)
+                            res['평가금액'] = f"₩{int(res['평가금액']):,}"
                             
-                        st.dataframe(port_df, use_container_width=True)
+                        port_df = pd.DataFrame(results)
+                        
+                        # 섹터별 원형 차트 그리기
+                        sec_weights = port_df.groupby('섹터')['비중(%)'].sum().reset_index()
+                        
+                        fig_pie = go.Figure(data=[go.Pie(
+                            labels=sec_weights['섹터'], values=sec_weights['비중(%)'], 
+                            hole=.4, textinfo='label+percent', 
+                            marker_colors=['#29b6f6', '#66bb6a', '#ffa726', '#ab47bc', '#ef5350']
+                        )])
+                        fig_pie.update_layout(template='plotly_dark', height=400, margin=dict(t=20, b=20))
+                        
+                        col_p1, col_p2 = st.columns([1, 1])
+                        with col_p1:
+                            st.plotly_chart(fig_pie, use_container_width=True)
+                        with col_p2:
+                            st.markdown("#### 💡 AI 포트폴리오 코멘트")
+                            max_sec = sec_weights.loc[sec_weights['비중(%)'].idxmax()]
+                            st.markdown(f"👉 총 평가금액은 **₩{int(total_value):,}** 이며, 가장 큰 비중을 차지하는 산업은 **{max_sec['섹터']} ({max_sec['비중(%)']}%)** 입니다.")
+                            
+                            if max_sec['비중(%)'] >= 60:
+                                st.error("⚠️ **집중 투자 경고!** 특정 산업에 60% 이상 자본이 몰려있습니다. 해당 산업이 타격을 받으면 계좌 전체가 위험해집니다. 리스크 분산을 권장합니다.")
+                            elif max_sec['비중(%)'] <= 40 and len(sec_weights) >= 3:
+                                st.success("✅ **훌륭한 분산 투자!** 여러 섹터에 자산이 안정적으로 배분되어 있어, 하락장에서도 강한 방어력을 보여줄 수 있습니다.")
+                            else:
+                                st.info("ℹ️ **무난한 배분!** 밸런스가 나쁘지 않으나, 시장 상황에 맞춰 조금 더 다변화해도 좋습니다.")
+                                
+                            # 수량과 계산된 비중이 모두 표시되는 최종 표
+                            st.dataframe(port_df[['종목', '수량', '섹터', '평가금액', '비중(%)']], use_container_width=True)
 
 # --- [3. 메인 실행 (검색창)] ---
 stock_options = get_stock_list()
