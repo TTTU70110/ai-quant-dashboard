@@ -32,8 +32,36 @@ st.markdown(
     unsafe_allow_html=True
 )
 
+# --- [신규: 좌측 사이드바 후원 링크 (정중한 버전)] ---
+with st.sidebar:
+    st.markdown("### ☕ 개발자에게 마음 전하기")
+    st.markdown(
+        "<div style='font-size: 0.95em; color: #dddddd; line-height: 1.6; margin-bottom: 20px;'>"
+        "본 대시보드가 성공적인 투자에 조금이나마 도움이 되셨다면, 따뜻한 커피 한 잔의 후원을 부탁드립니다.<br><br>"
+        "보내주신 귀한 응원은 앞으로 더 유용하고 편리한 기능을 개발하는 데 정말 큰 힘이 됩니다. 늘 성공적인 투자를 기원합니다. 진심으로 감사합니다!"
+        "</div>", 
+        unsafe_allow_html=True
+    )
+    
+    toon_link = "https://toon.at/donate/tttu70110"
+    
+    st.markdown(
+        f"""
+        <a href="{toon_link}" target="_blank" style="text-decoration: none;">
+            <div style="background-color: #3b82f6; color: white; padding: 12px; border-radius: 8px; text-align: center; font-weight: bold; font-size: 1.05em;">
+                💖 투네이션으로 후원하기
+            </div>
+        </a>
+        <div style="text-align: center; font-size: 0.85em; color: gray; margin-top: 8px; margin-bottom: 30px;">
+            (카카오페이 · 네이버페이 · 토스 가능)
+        </div>
+        """, 
+        unsafe_allow_html=True
+    )
+
 st.title("🤖 투자 도우미 프로그램")
 st.warning("⚠️ **[투자 유의사항]** 본 프로그램이 제공하는 정보는 참고용 보조 자료입니다. 모든 투자의 최종 판단과 그에 따른 책임은 전적으로 투자자 본인에게 있습니다.")
+
 
 # --- [1. 공통 데이터 엔진] ---
 @st.cache_data(ttl=3600)
