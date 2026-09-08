@@ -3,7 +3,8 @@ import re
 try:
     import FinanceDataReader as fdr
 except ImportError:
-    os.system("pip install finance-datareader > /dev/null 2>&1")
+    # 텍스트(HTML) 크롤링 우회를 위해 lxml 패키지도 함께 설치
+    os.system("pip install finance-datareader lxml html5lib > /dev/null 2>&1")
     import FinanceDataReader as fdr
 
 import streamlit as st
@@ -32,7 +33,7 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# --- [신규: 좌측 사이드바 후원 링크 (정중한 버전)] ---
+# --- [좌측 사이드바 후원 링크] ---
 with st.sidebar:
     st.markdown("### ☕ 개발자에게 마음 전하기")
     st.markdown(
@@ -63,10 +64,37 @@ st.title("🤖 투자 도우미 프로그램")
 st.warning("⚠️ **[투자 유의사항]** 본 프로그램이 제공하는 정보는 참고용 보조 자료입니다. 모든 투자의 최종 판단과 그에 따른 책임은 전적으로 투자자 본인에게 있습니다.")
 
 
-# --- [1. 공통 데이터 엔진] ---
+# --- [1. 공통 데이터 엔진 (무적의 우회 로직 추가)] ---
 @st.cache_data(ttl=3600)
 def load_krx_data():
-    return fdr.StockListing('KRX')
+    try:
+        # 1. 기본 시도: FDR 라이브러리 사용
+        df = fdr.StockListing('KRX')
+        if not df.empty:
+            return df
+    except Exception:
+        pass
+        
+    try:
+        # 2. FDR 서버 다운(HTTPError) 시: 한국거래소(KIND) 직접 크롤링 우회
+        kospi_url = 'http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13&marketType=stockMkt'
+        kosdaq_url = 'http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13&marketType=kosdaqMkt'
+        
+        kospi = pd.read_html(kospi_url, header=0)[0]
+        kospi['Market'] = 'KOSPI'
+        kosdaq = pd.read_html(kosdaq_url, header=0)[0]
+        kosdaq['Market'] = 'KOSDAQ'
+        
+        df = pd.concat([kospi, kosdaq], ignore_index=True)
+        df = df[['회사명', '종목코드', '업종', 'Market']].rename(columns={'회사명': 'Name', '종목코드': 'Code', '업종': 'Sector'})
+        df['Code'] = df['Code'].astype(str).str.zfill(6)
+        
+        # 임시 데이터로 채워 오류 방지
+        df['Marcap'] = 0
+        df['ChagesRatio'] = 0.0
+        return df
+    except Exception:
+        return pd.DataFrame()
 
 @st.cache_data(ttl=3600)
 def get_stock_list():
@@ -202,8 +230,12 @@ def run_dashboard(ticker_code, company_display_name):
         code_only = ticker_code.split('.')[0]
         match = krx_df[krx_df['Code'] == code_only]
         if not match.empty:
-            mkt_cap = match.iloc[0]['Marcap']
-            mkt_cap_str = f"{mkt_cap / 1_000_000_000_000:.2f}조 원"
+            try:
+                mkt_cap = float(match.iloc[0].get('Marcap', 0))
+                if mkt_cap > 0:
+                    mkt_cap_str = f"{mkt_cap / 1_000_000_000_000:.2f}조 원"
+            except:
+                pass
     else:
         mkt_cap = info.get('marketCap', 0)
         if mkt_cap: 
@@ -432,9 +464,109 @@ def run_dashboard(ticker_code, company_display_name):
         st.subheader("🚀 시가총액 TOP 100 & 내일의 급등주 AI 스캐너")
         
         krx_df = load_krx_data()
-        if 'Marcap' in krx_df.columns:
+        has_marcap = 'Marcap' in krx_df.columns and pd.to_numeric(krx_df['Marcap'], errors='coerce').sum() > 0
+        
+        if not krx_df.empty and has_marcap:
             top100 = krx_df.sort_values(by='Marcap', ascending=False).head(100).reset_index(drop=True)
             top100.index = top100.index + 1
+            
+            st.markdown("#### 🔥 오늘 시장을 주도하는 핫(Hot) 테마 Top 3")
+            st.markdown("한국 시가총액 Top 100 종목 중, **시장에 돈이 가장 많이 몰린 테마 3개와 핵심 정보**를 요약합니다.")
+            
+            def get_sector_name(sector_str):
+                s = str(sector_str)
+                if s == 'nan' or not s: return '기타'
+                if any(k in s for k in ['소프트웨어', '컴퓨터', '반도체', '전자부품', '통신', 'IT']): return '💻 IT/반도체'
+                if any(k in s for k in ['자동차', '운송장비', '기계']): return '🚗 자동차/기계'
+                if any(k in s for k in ['화학', '의약품', '의료', '생물', '바이오']): return '💊 바이오/헬스'
+                if any(k in s for k in ['은행', '증권', '보험', '금융']): return '🏦 금융'
+                if any(k in s for k in ['방송', '출판', '영화', '플랫폼', '엔터']): return '📱 플랫폼/콘텐츠'
+                if any(k in s for k in ['음식료', '섬유', '의복', '유통', '소매']): return '🛒 소비재'
+                if any(k in s for k in ['철강', '금속', '비금속', '건설']): return '🧱 철강/건설'
+                if any(k in s for k in ['전기', '가스', '에너지']): return '⚡ 에너지/유틸리티'
+                return f"🏭 {s}"
+                
+            top100_sec = top100.copy()
+            
+            if 'Sector' not in top100_sec.columns:
+                try:
+                    krx_desc = fdr.StockListing('KRX-DESC')
+                    if 'Sector' in krx_desc.columns:
+                        top100_sec = pd.merge(top100_sec, krx_desc[['Code', 'Sector']], on='Code', how='left')
+                    else:
+                        top100_sec['Sector'] = '기타'
+                except:
+                    top100_sec['Sector'] = '기타'
+            
+            top100_sec['섹터명'] = top100_sec['Sector'].apply(get_sector_name)
+            
+            sec_counts = top100_sec['섹터명'].value_counts()
+            valid_sectors = sec_counts[sec_counts >= 3].index
+            valid_top100 = top100_sec[top100_sec['섹터명'].isin(valid_sectors)]
+            valid_top100 = valid_top100[valid_top100['섹터명'] != '기타']
+            
+            sec_stats = []
+            for sec_name, group in valid_top100.groupby('섹터명'):
+                if len(group) >= 3: 
+                    mean_change = group['ChagesRatio'].mean()
+                    total_marcap = group['Marcap'].sum() / 1_000_000_000_000 
+                    up_cnt = len(group[group['ChagesRatio'] > 0])
+                    down_cnt = len(group[group['ChagesRatio'] < 0])
+                    flat_cnt = len(group[group['ChagesRatio'] == 0])
+                    
+                    sec_stats.append({
+                        '섹터명': sec_name,
+                        '평균등락률': mean_change,
+                        '총시총': total_marcap,
+                        '상승': up_cnt,
+                        '하락': down_cnt,
+                        '보합': flat_cnt,
+                        '종목데이터': group
+                    })
+            
+            if sec_stats:
+                sec_df = pd.DataFrame(sec_stats).sort_values('평균등락률', ascending=False)
+                hot_sectors = sec_df[sec_df['평균등락률'] > 0]
+                
+                if not hot_sectors.empty:
+                    top3_sectors = hot_sectors.head(3)
+                    cols = st.columns(3)
+                    medals = ["🥇 1위", "🥈 2위", "🥉 3위"]
+                    
+                    for i, (idx, row) in enumerate(top3_sectors.iterrows()):
+                        with cols[i]:
+                            with st.container(border=True):
+                                st.markdown(f"<h4 style='text-align: center; margin-bottom: 0px;'>{medals[i]} {row['섹터명']}</h4>", unsafe_allow_html=True)
+                                color = "#ff4b4b" if row['평균등락률'] > 0 else "#00b4d8"
+                                st.markdown(f"<h2 style='text-align: center; color: {color}; margin-top: 5px; margin-bottom: 5px;'>{row['평균등락률']:+.2f}%</h2>", unsafe_allow_html=True)
+                                st.markdown(f"<div style='text-align: center; font-size: 0.9em; color: #aaaaaa;'>"
+                                            f"테마 체급: <b>{row['총시총']:,.0f}조 원</b><br>"
+                                            f"🔴 상승 <b>{row['상승']}</b> | ➖ 보합 <b>{row['보합']}</b> | 🔵 하락 <b>{row['하락']}</b>"
+                                            f"</div>", unsafe_allow_html=True)
+                                st.divider()
+                                st.caption("🚀 주도주 Top 5")
+                                
+                                group_df = row['종목데이터'].sort_values('ChagesRatio', ascending=False)
+                                stock_md = ""
+                                for _, s_row in group_df.head(5).iterrows():
+                                    s_name = s_row['Name']
+                                    s_price = s_row['Close']
+                                    s_change = s_row['ChagesRatio']
+                                    s_icon = "🔺" if s_change > 0 else "🔻" if s_change < 0 else "➖"
+                                    s_color = "#ff4b4b" if s_change > 0 else "#00b4d8" if s_change < 0 else "gray"
+                                    sign = "+" if s_change > 0 else ""
+                                    
+                                    stock_md += f"<div style='display: flex; justify-content: space-between; margin-bottom: 4px; font-size: 0.95em;'>" \
+                                                f"<span><b>{s_name}</b></span>" \
+                                                f"<span>₩{int(s_price):,} <span style='color:{s_color}; font-weight:bold;'>({s_icon} {sign}{s_change:.2f}%)</span></span>" \
+                                                f"</div>"
+                                st.markdown(stock_md, unsafe_allow_html=True)
+                else:
+                    st.info("📉 오늘 시장 전체가 하락장이라 뚜렷한 상승 주도 테마가 없습니다.")
+            else:
+                st.info("📊 데이터를 불러오는 중이거나 분석 가능한 테마가 부족합니다.")
+            
+            st.divider()
             
             st.markdown("#### 🤖 내일의 급등주 AI 스캐너")
             if st.button("🔍 상위 100종목 AI 스캔 시작 (약 15~20초 소요)", type="primary", use_container_width=True):
@@ -442,8 +574,8 @@ def run_dashboard(ticker_code, company_display_name):
                 ai_results = []
                 
                 for i, row in top100.iterrows():
-                    code, name, market = row['Code'], row['Name'], row['Market']
-                    t_code = f"{code}{'.KQ' if 'KOSDAQ' in str(market).upper() else '.KS'}"
+                    code, name = row['Code'], row['Name']
+                    t_code = f"{code}{'.KQ' if 'KOSDAQ' in str(row['Market']).upper() else '.KS'}"
                     
                     try:
                         hist = yf.Ticker(t_code).history(period="3mo")
@@ -496,11 +628,11 @@ def run_dashboard(ticker_code, company_display_name):
             display_df['시가총액'] = display_df['시가총액'].apply(lambda x: f"{x / 1000000000000:.2f}조 원")
             st.dataframe(display_df, use_container_width=True, height=600)
         else:
-            st.warning("한국거래소(KRX) 데이터를 불러올 수 없습니다.")
+            st.warning("⚠️ 현재 한국거래소(KRX) 서버 통신 문제로 랭킹 데이터를 불러올 수 없습니다. 종목 검색 기능은 정상적으로 이용 가능합니다.")
 
     with tab6:
         st.subheader("🛒 한국 상장 인기 ETF 탐색기")
-        st.markdown("다양한 테마와 지수를 추종하는 ETF 목록과 개별 상승/하락 트렌드를 확인하세요.")
+        st.markdown("다양한 테마와 지수를 추종하는 ETF 목록과 개별 시세표를 확인하세요.")
         
         etf_df = get_etf_list()
         
