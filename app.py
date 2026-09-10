@@ -63,6 +63,26 @@ with st.sidebar:
 st.title("🤖 투자 도우미 프로그램")
 st.warning("⚠️ **[투자 유의사항]** 본 프로그램이 제공하는 정보는 참고용 보조 자료입니다. 모든 투자의 최종 판단과 그에 따른 책임은 전적으로 투자자 본인에게 있습니다.")
 
+# --- [전역 고정 변수: 든든한 국내 우량주 80선 (서버 다운 대비용)] ---
+KOREAN_BLUECHIPS = [
+    "삼성전자 (005930)", "SK하이닉스 (000660)", "LG에너지솔루션 (373220)", "삼성바이오로직스 (207940)", 
+    "현대차 (005380)", "기아 (000270)", "셀트리온 (068270)", "KB금융 (105560)", "POSCO홀딩스 (005490)", 
+    "신한지주 (055550)", "NAVER (035420)", "삼성물산 (028260)", "LG화학 (051910)", "현대모비스 (012330)", 
+    "하나금융지주 (086790)", "삼성SDI (006400)", "카카오 (035720)", "메리츠금융지주 (138040)", "삼성생명 (032830)",
+    "HD현대중공업 (329180)", "LG전자 (066570)", "고려아연 (010130)", "SK (034730)", "우리금융지주 (316140)", 
+    "크래프톤 (259960)", "삼성화재 (000810)", "한국전력 (015760)", "기업은행 (024110)", "HD한국조선해양 (009540)", 
+    "KT&G (033780)", "삼성에스디에스 (018260)", "에코프로머티 (450080)", "SK스퀘어 (402340)", "한화에어로스페이스 (012450)", 
+    "SK이노베이션 (096770)", "SK텔레콤 (017670)", "포스코퓨처엠 (003670)", "KT (030200)", "현대글로비스 (086280)", 
+    "삼성전기 (009150)", "에코프로비엠 (247540)", "알테오젠 (196170)", "에코프로 (086520)", "HLB (028300)", 
+    "엔켐 (348370)", "리가켐바이오 (141080)", "삼천당제약 (000250)", "리노공업 (058470)", "휴젤 (145020)", 
+    "클래시스 (214150)", "HPSP (403870)", "엔씨소프트 (036570)", "두산에너빌리티 (034020)", "두산로보틱스 (454910)",
+    "카카오뱅크 (323410)", "카카오페이 (377300)", "하이브 (352820)", "대한항공 (003490)", "한미반도체 (042700)",
+    "아모레퍼시픽 (090430)", "LG생활건강 (051900)", "SK바이오팜 (326030)", "SK바이오사이언스 (302440)",
+    "포스코인터내셔널 (047050)", "현대로템 (064350)", "한화오션 (042660)", "LIG넥스원 (079550)", "LS일렉트릭 (010120)",
+    "HD현대일렉트릭 (267260)", "한국가스공사 (036460)", "삼양식품 (003230)", "농심 (004370)", "오리온 (271560)"
+]
+
+
 # --- [1. 공통 데이터 엔진] ---
 @st.cache_data(ttl=3600)
 def load_krx_data():
@@ -75,10 +95,8 @@ def load_krx_data():
     try:
         url = 'http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13'
         proxy_url = f"https://api.allorigins.win/raw?url={urllib.parse.quote(url)}"
-        
         headers = {'User-Agent': 'Mozilla/5.0'}
         res = requests.get(proxy_url, headers=headers, timeout=15)
-        
         df = pd.read_html(io.StringIO(res.text), header=0)[0]
         df = df[['회사명', '종목코드', '업종']].rename(columns={'회사명': 'Name', '종목코드': 'Code', '업종': 'Sector'})
         df['Code'] = df['Code'].astype(str).str.zfill(6)
@@ -96,25 +114,12 @@ def get_stock_list():
         "구글 (GOOGL)", "아마존 (AMZN)", "메타 (META)", "TSMC (TSM)", "브로드컴 (AVGO)", 
         "일라이 릴리 (LLY)", "JP모건 (JPM)", "버크셔 해서웨이 (BRK-B)", "코인베이스 (COIN)"
     ]
-    
-    korean_hardcoded = [
-        "삼성전자 (005930)", "SK하이닉스 (000660)", "LG에너지솔루션 (373220)", "삼성바이오로직스 (207940)", 
-        "현대차 (005380)", "기아 (000270)", "셀트리온 (068270)", "KB금융 (105560)", "POSCO홀딩스 (005490)", 
-        "신한지주 (055550)", "NAVER (035420)", "삼성물산 (028260)", "LG화학 (051910)", "현대모비스 (012330)", 
-        "하나금융지주 (086790)", "삼성SDI (006400)", "카카오 (035720)", "메리츠금융지주 (138040)", "삼성생명 (032830)",
-        "HD현대중공업 (329180)", "LG전자 (066570)", "고려아연 (010130)", "SK (034730)", "우리금융지주 (316140)", 
-        "크래프톤 (259960)", "삼성화재 (000810)", "한국전력 (015760)", "기업은행 (024110)", "HD한국조선해양 (009540)", 
-        "KT&G (033780)", "삼성에스디에스 (018260)", "에코프로머티 (450080)", "SK스퀘어 (402340)", "한화에어로스페이스 (012450)", 
-        "SK이노베이션 (096770)", "SK텔레콤 (017670)", "포스코퓨처엠 (003670)", "KT (030200)", "현대글로비스 (086280)", 
-        "삼성전기 (009150)", "에코프로비엠 (247540)", "알테오젠 (196170)", "에코프로 (086520)", "HLB (028300)"
-    ]
-    
     krx_list = []
     krx_df = load_krx_data()
     if not krx_df.empty:
         krx_list = [f"{row['Name']} ({row['Code']})" for _, row in krx_df.iterrows()]
         
-    final_list = global_list + korean_hardcoded + krx_list
+    final_list = global_list + KOREAN_BLUECHIPS + krx_list
     unique_list = list(dict.fromkeys(final_list))
     return unique_list
 
@@ -230,30 +235,23 @@ def run_dashboard(ticker_code, company_display_name):
     else:
         price_fmt = f"{currency}{current_price:,.2f}"
     
-    # ★ 시가총액 버그 영구 수정 완료 ★
     mkt_cap_str = "N/A"
-    
-    # 1순위: 야후 파이낸스에서 다이렉트로 가져오기 (가장 정확하고 빠름)
-    mkt_cap = info.get('marketCap', 0)
-    if mkt_cap and mkt_cap > 0:
-        if is_korean:
-            mkt_cap_str = f"{mkt_cap / 1_000_000_000_000:.2f}조 원"
-        else:
+    try:
+        krx_df = load_krx_data()
+        if not krx_df.empty and is_korean:
+            code_only = ticker_code.split('.')[0]
+            match = krx_df[krx_df['Code'] == code_only]
+            if not match.empty:
+                mkt_cap = float(match.iloc[0].get('Marcap', 0))
+                if mkt_cap > 0:
+                    mkt_cap_str = f"{mkt_cap / 1_000_000_000_000:.2f}조 원"
+    except:
+        pass
+        
+    if mkt_cap_str == "N/A" and not is_korean:
+        mkt_cap = info.get('marketCap', 0)
+        if mkt_cap: 
             mkt_cap_str = f"${mkt_cap / 1_000_000_000:.2f}B"
-    else:
-        # 2순위: 야후 데이터가 누락되었을 경우 한국거래소 데이터로 보완
-        if is_korean:
-            try:
-                krx_df = load_krx_data()
-                if not krx_df.empty:
-                    code_only = ticker_code.split('.')[0]
-                    match = krx_df[krx_df['Code'] == code_only]
-                    if not match.empty:
-                        m_val = float(match.iloc[0].get('Marcap', 0))
-                        if m_val > 0:
-                            mkt_cap_str = f"{m_val / 1_000_000_000_000:.2f}조 원"
-            except:
-                pass
 
     last_252_days = df.tail(252)
     high52_val = float(last_252_days['High'].max())
@@ -532,80 +530,88 @@ def run_dashboard(ticker_code, company_display_name):
             sim_fig.update_layout(template='plotly_dark', height=450, hovermode="x unified")
             st.plotly_chart(sim_fig, use_container_width=True, config=chart_config)
 
+    # ★ 수정: 에러 메시지 완전히 삭제 및 무적의 우회 스캐너 로직 적용 ★
     with tab5:
-        st.subheader("🚀 시가총액 TOP 100 & 내일의 급등주 AI 스캐너")
+        st.subheader("🚀 시가총액 상위 우량주 AI 스캐너")
         
-        try:
-            krx_df = fdr.StockListing('KRX')
-            has_marcap = 'Marcap' in krx_df.columns and pd.to_numeric(krx_df['Marcap'], errors='coerce').sum() > 0
+        krx_df = load_krx_data()
+        has_marcap = 'Marcap' in krx_df.columns and pd.to_numeric(krx_df['Marcap'], errors='coerce').sum() > 0
+        
+        # 시가총액 데이터가 멀쩡하게 잘 들어왔을 때 (정상 상황)
+        if not krx_df.empty and has_marcap:
+            top100 = krx_df.sort_values(by='Marcap', ascending=False).head(100).reset_index(drop=True)
+            top100.index = top100.index + 1
+        # 서버에서 시가총액을 안 줄 때 (비상 상황 - 에러 띄우는 대신 하드코딩 리스트로 완벽 대체!)
+        else:
+            st.info("💡 실시간 시가총액 서버 연결이 지연되어, '국내 시가총액 상위 우량주 80선'을 대상으로 즉시 스캔을 진행합니다.")
+            k_names = [x.split(" (")[0] for x in KOREAN_BLUECHIPS]
+            k_codes = [x.split(" (")[1].replace(")", "") for x in KOREAN_BLUECHIPS]
+            top100 = pd.DataFrame({'Name': k_names, 'Code': k_codes, 'Market': 'KRX', 'Marcap': 0, 'ChagesRatio': 0.0})
             
-            if not krx_df.empty and has_marcap:
-                top100 = krx_df.sort_values(by='Marcap', ascending=False).head(100).reset_index(drop=True)
-                top100.index = top100.index + 1
+        st.markdown("#### 🤖 내일의 급등주 AI 스캔")
+        st.write("시가총액 상위 우량주들의 최근 3개월 패턴과 보조지표를 실시간으로 분석하여, **내일 상승 확률이 가장 높은 종목**을 찾아냅니다.")
+        
+        if st.button("🔍 AI 스캔 시작 (약 15~20초 소요)", type="primary", use_container_width=True):
+            my_bar = st.progress(0, text="AI가 데이터를 분석 중입니다...")
+            ai_results = []
+            
+            for i, row in top100.iterrows():
+                code, name = row['Code'], row['Name']
+                t_code = f"{code}{'.KQ' if 'KOSDAQ' in str(row['Market']).upper() else '.KS'}"
                 
-                st.markdown("#### 🤖 내일의 급등주 AI 스캐너")
-                if st.button("🔍 상위 100종목 AI 스캔 시작 (약 15~20초 소요)", type="primary", use_container_width=True):
-                    my_bar = st.progress(0, text="AI가 데이터를 분석 중입니다...")
-                    ai_results = []
+                try:
+                    hist = yf.Ticker(t_code).history(period="3mo")
+                    hist = hist.dropna(subset=['Close'])
                     
-                    for i, row in top100.iterrows():
-                        code, name = row['Code'], row['Name']
-                        t_code = f"{code}{'.KQ' if 'KOSDAQ' in str(row['Market']).upper() else '.KS'}"
+                    if len(hist) > 20:
+                        hist['MA10'] = hist['Close'].rolling(10).mean()
+                        hist['MA20'] = hist['Close'].rolling(20).mean()
+                        delta2 = hist['Close'].diff()
+                        rs2 = (delta2.where(delta2 > 0, 0)).rolling(14).mean() / ((delta2.where(delta2 < 0, 0)).rolling(14).mean().abs() + 1e-9)
+                        hist['RSI'] = 100 - (100 / (1 + rs2))
+                        hist['Price_Change'] = hist['Close'].pct_change()
+                        hist['Volume_Change'] = hist['Volume'].pct_change()
+                        hist['Target'] = np.where(hist['Close'].shift(-1) > hist['Close'], 1, 0)
                         
-                        try:
-                            hist = yf.Ticker(t_code).history(period="3mo")
-                            hist = hist.dropna(subset=['Close'])
+                        ml_df2 = hist.dropna()
+                        if len(ml_df2) > 10:
+                            X2 = ml_df2[['MA10', 'MA20', 'RSI', 'Price_Change', 'Volume_Change']]
+                            y2 = ml_df2['Target']
+                            model2 = RandomForestClassifier(n_estimators=50, random_state=42).fit(X2, y2)
+                            prob2 = model2.predict_proba(X2.iloc[-1:])[0][1] * 100
                             
-                            if len(hist) > 20:
-                                hist['MA10'] = hist['Close'].rolling(10).mean()
-                                hist['MA20'] = hist['Close'].rolling(20).mean()
-                                delta2 = hist['Close'].diff()
-                                rs2 = (delta2.where(delta2 > 0, 0)).rolling(14).mean() / ((delta2.where(delta2 < 0, 0)).rolling(14).mean().abs() + 1e-9)
-                                hist['RSI'] = 100 - (100 / (1 + rs2))
-                                hist['Price_Change'] = hist['Close'].pct_change()
-                                hist['Volume_Change'] = hist['Volume'].pct_change()
-                                hist['Target'] = np.where(hist['Close'].shift(-1) > hist['Close'], 1, 0)
-                                
-                                ml_df2 = hist.dropna()
-                                if len(ml_df2) > 10:
-                                    X2 = ml_df2[['MA10', 'MA20', 'RSI', 'Price_Change', 'Volume_Change']]
-                                    y2 = ml_df2['Target']
-                                    model2 = RandomForestClassifier(n_estimators=50, random_state=42).fit(X2, y2)
-                                    prob2 = model2.predict_proba(X2.iloc[-1:])[0][1] * 100
-                                    
-                                    ai_results.append({
-                                        '종목명': name,
-                                        '상승 확률(%)': round(prob2, 1),
-                                        '현재가': f"₩{int(hist['Close'].iloc[-1]):,}",
-                                        'RSI (과열도)': round(hist['RSI'].iloc[-1], 1),
-                                    })
-                        except: 
-                            pass
-                        my_bar.progress(i / 100.0, text=f"분석 중... [{i}/100] {name}")
-                    
-                    my_bar.empty()
-                    
-                    if ai_results:
-                        res_df = pd.DataFrame(ai_results)
-                        top10 = res_df.sort_values(by='상승 확률(%)', ascending=False).head(10).reset_index(drop=True)
-                        top10.index = top10.index + 1
-                        st.success("🎉 **AI 스캔 완료! 내일 상승 확률이 가장 높은 TOP 10 종목입니다.**")
-                        st.dataframe(top10, use_container_width=True)
-                    else: 
-                        st.error("데이터 수집 중 오류가 발생했습니다.")
-                
-                st.divider()
-                st.markdown("#### 🏆 한국 주식 시가총액 순위 (1위 ~ 100위)")
-                display_df = top100[['Code', 'Name', 'Close', 'ChagesRatio', 'Marcap']].copy()
-                display_df.columns = ['종목코드', '종목명', '현재가', '등락률', '시가총액']
-                display_df['현재가'] = display_df['현재가'].apply(lambda x: f"₩{int(x):,}")
-                display_df['등락률'] = display_df['등락률'].apply(lambda x: f"{x:.2f}%")
-                display_df['시가총액'] = display_df['시가총액'].apply(lambda x: f"{x / 1000000000000:.2f}조 원")
-                st.dataframe(display_df, use_container_width=True, height=600)
-            else:
-                st.warning("⚠️ 현재 데이터 서버의 일시적 통신 문제로 랭킹 정보를 불러올 수 없습니다. (검색창을 통한 개별 종목 분석은 100% 정상 작동합니다.)")
-        except Exception:
-            st.warning("⚠️ 현재 데이터 서버의 일시적 통신 문제로 랭킹 정보를 불러올 수 없습니다. (검색창을 통한 개별 종목 분석은 100% 정상 작동합니다.)")
+                            ai_results.append({
+                                '종목명': name,
+                                '상승 확률(%)': round(prob2, 1),
+                                '현재가': f"₩{int(hist['Close'].iloc[-1]):,}",
+                                'RSI (과열도)': round(hist['RSI'].iloc[-1], 1),
+                            })
+                except: 
+                    pass
+                my_bar.progress((i + 1) / len(top100), text=f"분석 중... [{i+1}/{len(top100)}] {name}")
+            
+            my_bar.empty()
+            
+            if ai_results:
+                res_df = pd.DataFrame(ai_results)
+                top10 = res_df.sort_values(by='상승 확률(%)', ascending=False).head(10).reset_index(drop=True)
+                top10.index = top10.index + 1
+                st.success("🎉 **AI 스캔 완료! 내일 상승 확률이 가장 높은 TOP 10 종목입니다.**")
+                st.dataframe(top10, use_container_width=True)
+            else: 
+                st.error("데이터 수집 중 오류가 발생했습니다.")
+        
+        st.divider()
+        
+        # 시가총액 순위표는 실제 데이터(Marcap)가 있을 때만 예쁘게 표출
+        if has_marcap:
+            st.markdown("#### 🏆 한국 주식 시가총액 순위 (1위 ~ 100위)")
+            display_df = top100[['Code', 'Name', 'Close', 'ChagesRatio', 'Marcap']].copy()
+            display_df.columns = ['종목코드', '종목명', '현재가', '등락률', '시가총액']
+            display_df['현재가'] = display_df['현재가'].apply(lambda x: f"₩{int(x):,}")
+            display_df['등락률'] = display_df['등락률'].apply(lambda x: f"{x:.2f}%")
+            display_df['시가총액'] = display_df['시가총액'].apply(lambda x: f"{x / 1000000000000:.2f}조 원")
+            st.dataframe(display_df, use_container_width=True, height=600)
 
     with tab6:
         st.subheader("🛒 한국 상장 인기 ETF 탐색기")
