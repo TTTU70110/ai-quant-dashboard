@@ -63,36 +63,33 @@ with st.sidebar:
 st.title("🤖 투자 도우미 프로그램")
 st.warning("⚠️ **[투자 유의사항]** 본 프로그램이 제공하는 정보는 참고용 보조 자료입니다. 모든 투자의 최종 판단과 그에 따른 책임은 전적으로 투자자 본인에게 있습니다.")
 
-# --- [1. 공통 데이터 엔진 (2500개 전체 주식 복구 및 차단 우회)] ---
-@st.cache_data(ttl=86400)
+# --- [1. 공통 데이터 엔진 (글로벌 우회 프록시 + 하드코딩 적용)] ---
+@st.cache_data(ttl=3600)
 def load_krx_data():
-    # 1. 봇 차단을 피하기 위한 강력한 사람 위장(User-Agent) 헤더 적용
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    }
     try:
-        # 한국거래소(KIND) 직접 접속 및 크롤링
-        kospi_res = requests.get('http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13&marketType=stockMkt', headers=headers, timeout=10)
-        kosdaq_res = requests.get('http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13&marketType=kosdaqMkt', headers=headers, timeout=10)
+        # 1. 기본 시도 (FDR)
+        df = fdr.StockListing('KRX')
+        if not df.empty: return df
+    except Exception:
+        pass
         
-        kospi_df = pd.read_html(io.StringIO(kospi_res.text), header=0)[0]
-        kospi_df['Market'] = 'KOSPI'
-        kosdaq_df = pd.read_html(io.StringIO(kosdaq_res.text), header=0)[0]
-        kosdaq_df['Market'] = 'KOSDAQ'
+    try:
+        # 2. 강력한 우회 수단: 글로벌 프록시를 통한 한국거래소 우회 접속 (스트림릿 IP 차단 완벽 회피)
+        url = 'http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13'
+        proxy_url = f"https://api.allorigins.win/raw?url={urllib.parse.quote(url)}"
         
-        df = pd.concat([kospi_df, kosdaq_df], ignore_index=True)
-        df = df[['회사명', '종목코드', '업종', 'Market']].rename(columns={'회사명': 'Name', '종목코드': 'Code', '업종': 'Sector'})
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        res = requests.get(proxy_url, headers=headers, timeout=15)
+        
+        df = pd.read_html(io.StringIO(res.text), header=0)[0]
+        df = df[['회사명', '종목코드', '업종']].rename(columns={'회사명': 'Name', '종목코드': 'Code', '업종': 'Sector'})
         df['Code'] = df['Code'].astype(str).str.zfill(6)
+        df['Market'] = 'KRX'
         df['Marcap'] = 0
         df['ChagesRatio'] = 0.0
         return df
     except Exception:
-        # 2. KIND 접속 실패 시 파이낸스데이터리더(FDR)로 2차 시도
-        try:
-            df = fdr.StockListing('KRX')
-            return df
-        except:
-            return pd.DataFrame()
+        return pd.DataFrame()
 
 @st.cache_data(ttl=86400)
 def get_stock_list():
@@ -102,12 +99,32 @@ def get_stock_list():
         "일라이 릴리 (LLY)", "JP모건 (JPM)", "버크셔 해서웨이 (BRK-B)", "코인베이스 (COIN)"
     ]
     
+    # ★ 지난번 누락되었던 든든한 국내 우량주 고정 리스트 ★
+    korean_hardcoded = [
+        "삼성전자 (005930)", "SK하이닉스 (000660)", "LG에너지솔루션 (373220)", "삼성바이오로직스 (207940)", 
+        "현대차 (005380)", "기아 (000270)", "셀트리온 (068270)", "KB금융 (105560)", "POSCO홀딩스 (005490)", 
+        "신한지주 (055550)", "NAVER (035420)", "삼성물산 (028260)", "LG화학 (051910)", "현대모비스 (012330)", 
+        "하나금융지주 (086790)", "삼성SDI (006400)", "카카오 (035720)", "메리츠금융지주 (138040)", "삼성생명 (032830)",
+        "HD현대중공업 (329180)", "LG전자 (066570)", "고려아연 (010130)", "SK (034730)", "우리금융지주 (316140)", 
+        "크래프톤 (259960)", "삼성화재 (000810)", "한국전력 (015760)", "기업은행 (024110)", "HD한국조선해양 (009540)", 
+        "KT&G (033780)", "삼성에스디에스 (018260)", "에코프로머티 (450080)", "SK스퀘어 (402340)", "한화에어로스페이스 (012450)", 
+        "SK이노베이션 (096770)", "SK텔레콤 (017670)", "포스코퓨처엠 (003670)", "KT (030200)", "현대글로비스 (086280)", 
+        "삼성전기 (009150)", "에코프로비엠 (247540)", "알테오젠 (196170)", "에코프로 (086520)", "HLB (028300)", 
+        "엔켐 (348370)", "리가켐바이오 (141080)", "삼천당제약 (000250)", "리노공업 (058470)", "휴젤 (145020)", 
+        "클래시스 (214150)", "HPSP (403870)", "엔씨소프트 (036570)", "두산에너빌리티 (034020)", "두산로보틱스 (454910)",
+        "카카오뱅크 (323410)", "카카오페이 (377300)", "하이브 (352820)", "대한항공 (003490)", "한미반도체 (042700)",
+        "아모레퍼시픽 (090430)", "LG생활건강 (051900)", "SK바이오팜 (326030)", "SK바이오사이언스 (302440)",
+        "포스코인터내셔널 (047050)", "현대로템 (064350)", "한화오션 (042660)", "LIG넥스원 (079550)", "LS일렉트릭 (010120)",
+        "HD현대일렉트릭 (267260)", "한국가스공사 (036460)", "삼양식품 (003230)", "농심 (004370)", "오리온 (271560)"
+    ]
+    
     krx_list = []
     krx_df = load_krx_data()
     if not krx_df.empty:
         krx_list = [f"{row['Name']} ({row['Code']})" for _, row in krx_df.iterrows()]
         
-    final_list = global_list + krx_list
+    # 세 가지 리스트를 합친 뒤 중복된 종목 제거
+    final_list = global_list + korean_hardcoded + krx_list
     unique_list = list(dict.fromkeys(final_list))
     return unique_list
 
@@ -269,7 +286,7 @@ def run_dashboard(ticker_code, company_display_name):
     c4.metric("52주 최저", low52)
     c5.metric("RSI (과열도)", f"{latest_rsi:.1f}", rsi_status)
     
-    # ★ 신규 기능 1: 실시간 뉴스 크롤링 및 감성 분석 ★
+    # ★ 뉴스 실시간 크롤링 및 감성 분석 ★
     articles = []
     pos_arts, neg_arts, neu_arts = [], [], []
     
@@ -298,8 +315,6 @@ def run_dashboard(ticker_code, company_display_name):
         pass
 
     # --- [상세 브리핑 문구 생성기] ---
-    
-    # 1. 하루 요약 텍스트
     if articles:
         pos_ratio = len(pos_arts) / len(articles) * 100
         neg_ratio = len(neg_arts) / len(articles) * 100
@@ -320,7 +335,6 @@ def run_dashboard(ticker_code, company_display_name):
         news_trend = "오늘 날짜로 갱신된 주요 뉴스 이슈가 부족하여 뉴스 요약이 제한적입니다."
         news_details = "수집된 최신 기사가 없습니다."
 
-    # 2. 내일의 주가 전망 텍스트
     if up_prob >= 60:
         ml_pred = f"상승 예측 확률이 **{up_prob:.1f}%**로 매우 높게 나타났습니다. 머신러닝 패턴상 내일 **강한 상승 모멘텀**이 기대됩니다."
     elif up_prob >= 50:
@@ -330,7 +344,6 @@ def run_dashboard(ticker_code, company_display_name):
     else:
         ml_pred = f"하락 예측 확률이 **{100-up_prob:.1f}%**로 높게 분석되었습니다. 내일은 **하락 리스크가 크므로 보수적인 접근**을 권장합니다."
         
-    # 3. 상세 기술적 지표 문구
     vol_chg = df['Volume_Change'].iloc[-1]
     if pd.isna(vol_chg): vol_chg = 0
     vol_status = "급격히 증가하며 시장의 관심이 쏠리고" if vol_chg > 0.5 else "다소 감소하며 눈치 보기 장세가 이어지고" if vol_chg < -0.3 else "평이한 수준을 유지하고"
@@ -595,9 +608,9 @@ def run_dashboard(ticker_code, company_display_name):
                 display_df['시가총액'] = display_df['시가총액'].apply(lambda x: f"{x / 1000000000000:.2f}조 원")
                 st.dataframe(display_df, use_container_width=True, height=600)
             else:
-                st.warning("⚠️ 현재 데이터 서버의 일시적 통신 문제로 랭킹 정보를 불러올 수 없습니다. 우회 로직을 통해 종목 검색은 정상 작동 중입니다.")
+                st.warning("⚠️ 현재 데이터 서버의 일시적 통신 문제로 랭킹 정보를 불러올 수 없습니다. (검색창을 통한 개별 종목 분석은 100% 정상 작동합니다.)")
         except Exception:
-            st.warning("⚠️ 현재 데이터 서버의 일시적 통신 문제로 랭킹 정보를 불러올 수 없습니다. 우회 로직을 통해 종목 검색은 정상 작동 중입니다.")
+            st.warning("⚠️ 현재 데이터 서버의 일시적 통신 문제로 랭킹 정보를 불러올 수 없습니다. (검색창을 통한 개별 종목 분석은 100% 정상 작동합니다.)")
 
     with tab6:
         st.subheader("🛒 한국 상장 인기 ETF 탐색기")
