@@ -63,18 +63,16 @@ with st.sidebar:
 st.title("🤖 투자 도우미 프로그램")
 st.warning("⚠️ **[투자 유의사항]** 본 프로그램이 제공하는 정보는 참고용 보조 자료입니다. 모든 투자의 최종 판단과 그에 따른 책임은 전적으로 투자자 본인에게 있습니다.")
 
-# --- [1. 공통 데이터 엔진 (글로벌 우회 프록시 + 하드코딩 적용)] ---
+# --- [1. 공통 데이터 엔진] ---
 @st.cache_data(ttl=3600)
 def load_krx_data():
     try:
-        # 1. 기본 시도 (FDR)
         df = fdr.StockListing('KRX')
         if not df.empty: return df
     except Exception:
         pass
         
     try:
-        # 2. 강력한 우회 수단: 글로벌 프록시를 통한 한국거래소 우회 접속 (스트림릿 IP 차단 완벽 회피)
         url = 'http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13'
         proxy_url = f"https://api.allorigins.win/raw?url={urllib.parse.quote(url)}"
         
@@ -99,7 +97,6 @@ def get_stock_list():
         "일라이 릴리 (LLY)", "JP모건 (JPM)", "버크셔 해서웨이 (BRK-B)", "코인베이스 (COIN)"
     ]
     
-    # ★ 지난번 누락되었던 든든한 국내 우량주 고정 리스트 ★
     korean_hardcoded = [
         "삼성전자 (005930)", "SK하이닉스 (000660)", "LG에너지솔루션 (373220)", "삼성바이오로직스 (207940)", 
         "현대차 (005380)", "기아 (000270)", "셀트리온 (068270)", "KB금융 (105560)", "POSCO홀딩스 (005490)", 
@@ -109,13 +106,7 @@ def get_stock_list():
         "크래프톤 (259960)", "삼성화재 (000810)", "한국전력 (015760)", "기업은행 (024110)", "HD한국조선해양 (009540)", 
         "KT&G (033780)", "삼성에스디에스 (018260)", "에코프로머티 (450080)", "SK스퀘어 (402340)", "한화에어로스페이스 (012450)", 
         "SK이노베이션 (096770)", "SK텔레콤 (017670)", "포스코퓨처엠 (003670)", "KT (030200)", "현대글로비스 (086280)", 
-        "삼성전기 (009150)", "에코프로비엠 (247540)", "알테오젠 (196170)", "에코프로 (086520)", "HLB (028300)", 
-        "엔켐 (348370)", "리가켐바이오 (141080)", "삼천당제약 (000250)", "리노공업 (058470)", "휴젤 (145020)", 
-        "클래시스 (214150)", "HPSP (403870)", "엔씨소프트 (036570)", "두산에너빌리티 (034020)", "두산로보틱스 (454910)",
-        "카카오뱅크 (323410)", "카카오페이 (377300)", "하이브 (352820)", "대한항공 (003490)", "한미반도체 (042700)",
-        "아모레퍼시픽 (090430)", "LG생활건강 (051900)", "SK바이오팜 (326030)", "SK바이오사이언스 (302440)",
-        "포스코인터내셔널 (047050)", "현대로템 (064350)", "한화오션 (042660)", "LIG넥스원 (079550)", "LS일렉트릭 (010120)",
-        "HD현대일렉트릭 (267260)", "한국가스공사 (036460)", "삼양식품 (003230)", "농심 (004370)", "오리온 (271560)"
+        "삼성전기 (009150)", "에코프로비엠 (247540)", "알테오젠 (196170)", "에코프로 (086520)", "HLB (028300)"
     ]
     
     krx_list = []
@@ -123,7 +114,6 @@ def get_stock_list():
     if not krx_df.empty:
         krx_list = [f"{row['Name']} ({row['Code']})" for _, row in krx_df.iterrows()]
         
-    # 세 가지 리스트를 합친 뒤 중복된 종목 제거
     final_list = global_list + korean_hardcoded + krx_list
     unique_list = list(dict.fromkeys(final_list))
     return unique_list
@@ -240,23 +230,30 @@ def run_dashboard(ticker_code, company_display_name):
     else:
         price_fmt = f"{currency}{current_price:,.2f}"
     
+    # ★ 시가총액 버그 영구 수정 완료 ★
     mkt_cap_str = "N/A"
-    try:
-        krx_df = load_krx_data()
-        if not krx_df.empty and is_korean:
-            code_only = ticker_code.split('.')[0]
-            match = krx_df[krx_df['Code'] == code_only]
-            if not match.empty:
-                mkt_cap = float(match.iloc[0].get('Marcap', 0))
-                if mkt_cap > 0:
-                    mkt_cap_str = f"{mkt_cap / 1_000_000_000_000:.2f}조 원"
-    except:
-        pass
-        
-    if mkt_cap_str == "N/A" and not is_korean:
-        mkt_cap = info.get('marketCap', 0)
-        if mkt_cap: 
+    
+    # 1순위: 야후 파이낸스에서 다이렉트로 가져오기 (가장 정확하고 빠름)
+    mkt_cap = info.get('marketCap', 0)
+    if mkt_cap and mkt_cap > 0:
+        if is_korean:
+            mkt_cap_str = f"{mkt_cap / 1_000_000_000_000:.2f}조 원"
+        else:
             mkt_cap_str = f"${mkt_cap / 1_000_000_000:.2f}B"
+    else:
+        # 2순위: 야후 데이터가 누락되었을 경우 한국거래소 데이터로 보완
+        if is_korean:
+            try:
+                krx_df = load_krx_data()
+                if not krx_df.empty:
+                    code_only = ticker_code.split('.')[0]
+                    match = krx_df[krx_df['Code'] == code_only]
+                    if not match.empty:
+                        m_val = float(match.iloc[0].get('Marcap', 0))
+                        if m_val > 0:
+                            mkt_cap_str = f"{m_val / 1_000_000_000_000:.2f}조 원"
+            except:
+                pass
 
     last_252_days = df.tail(252)
     high52_val = float(last_252_days['High'].max())
@@ -286,7 +283,7 @@ def run_dashboard(ticker_code, company_display_name):
     c4.metric("52주 최저", low52)
     c5.metric("RSI (과열도)", f"{latest_rsi:.1f}", rsi_status)
     
-    # ★ 뉴스 실시간 크롤링 및 감성 분석 ★
+    # --- [뉴스 실시간 크롤링 및 감성 분석] ---
     articles = []
     pos_arts, neg_arts, neu_arts = [], [], []
     
@@ -314,7 +311,6 @@ def run_dashboard(ticker_code, company_display_name):
     except:
         pass
 
-    # --- [상세 브리핑 문구 생성기] ---
     if articles:
         pos_ratio = len(pos_arts) / len(articles) * 100
         neg_ratio = len(neg_arts) / len(articles) * 100
@@ -359,7 +355,6 @@ def run_dashboard(ticker_code, company_display_name):
 
     # --- [UI 출력: AI 데일리 브리핑] ---
     st.markdown("### 🤖 AI 데일리 종합 브리핑")
-    
     col_b1, col_b2 = st.columns(2)
     with col_b1:
         with st.container(border=True, height=230):
@@ -541,7 +536,7 @@ def run_dashboard(ticker_code, company_display_name):
         st.subheader("🚀 시가총액 TOP 100 & 내일의 급등주 AI 스캐너")
         
         try:
-            krx_df = load_krx_data()
+            krx_df = fdr.StockListing('KRX')
             has_marcap = 'Marcap' in krx_df.columns and pd.to_numeric(krx_df['Marcap'], errors='coerce').sum() > 0
             
             if not krx_df.empty and has_marcap:
