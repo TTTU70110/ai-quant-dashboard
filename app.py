@@ -3,7 +3,7 @@ import re
 try:
     import FinanceDataReader as fdr
 except ImportError:
-    os.system("pip install finance-datareader > /dev/null 2>&1")
+    os.system("pip install finance-datareader lxml html5lib > /dev/null 2>&1")
     import FinanceDataReader as fdr
 
 import streamlit as st
@@ -62,52 +62,57 @@ with st.sidebar:
 st.title("🤖 투자 도우미 프로그램")
 st.warning("⚠️ **[투자 유의사항]** 본 프로그램이 제공하는 정보는 참고용 보조 자료입니다. 모든 투자의 최종 판단과 그에 따른 책임은 전적으로 투자자 본인에게 있습니다.")
 
-
-# --- [1. 공통 데이터 엔진 (서버 차단 원천 방지 오프라인 리스트 도입)] ---
+# --- [1. 공통 데이터 엔진] ---
+@st.cache_data(ttl=3600)
+def load_krx_data():
+    try:
+        df = fdr.StockListing('KRX')
+        if not df.empty: return df
+    except Exception:
+        pass
+        
+    try:
+        kospi_url = 'http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13&marketType=stockMkt'
+        kosdaq_url = 'http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13&marketType=kosdaqMkt'
+        
+        kospi = pd.read_html(kospi_url, header=0)[0]
+        kospi['Market'] = 'KOSPI'
+        kosdaq = pd.read_html(kosdaq_url, header=0)[0]
+        kosdaq['Market'] = 'KOSDAQ'
+        
+        df = pd.concat([kospi, kosdaq], ignore_index=True)
+        df = df[['회사명', '종목코드', '업종', 'Market']].rename(columns={'회사명': 'Name', '종목코드': 'Code', '업종': 'Sector'})
+        df['Code'] = df['Code'].astype(str).str.zfill(6)
+        df['Marcap'] = 0
+        df['ChagesRatio'] = 0.0
+        return df
+    except Exception:
+        return pd.DataFrame()
 
 @st.cache_data(ttl=86400)
 def get_stock_list():
-    """
-    스트림릿 클라우드의 한국 서버 IP 차단(HTTP 403/Timeout)을 영구적으로 피하기 위해,
-    국내외 주요 종목 1000여 개를 메모리에 직접 하드코딩하여 캐싱합니다.
-    이렇게 하면 크롤링 실패로 인해 검색창이 멈추는 에러가 0%가 됩니다.
-    """
-    # 1. 최우선 해외 주식
     global_list = [
         "애플 (AAPL)", "테슬라 (TSLA)", "엔비디아 (NVDA)", "마이크로소프트 (MSFT)", 
         "구글 (GOOGL)", "아마존 (AMZN)", "메타 (META)", "TSMC (TSM)", "브로드컴 (AVGO)", 
         "일라이 릴리 (LLY)", "JP모건 (JPM)", "버크셔 해서웨이 (BRK-B)", "코인베이스 (COIN)"
     ]
     
-    # 2. 한국 주식 하드코딩 리스트 (시가총액 상위 위주 대량 내장)
     korean_hardcoded = [
         "삼성전자 (005930)", "SK하이닉스 (000660)", "LG에너지솔루션 (373220)", "삼성바이오로직스 (207940)", 
         "현대차 (005380)", "기아 (000270)", "셀트리온 (068270)", "KB금융 (105560)", "POSCO홀딩스 (005490)", 
         "신한지주 (055550)", "NAVER (035420)", "삼성물산 (028260)", "LG화학 (051910)", "현대모비스 (012330)", 
-        "하나금융지주 (086790)", "삼성SDI (006400)", "카카오 (035720)", "메리츠금융지주 (138040)", "삼성생명 (032830)", 
-        "HD현대중공업 (329180)", "LG전자 (066570)", "고려아연 (010130)", "SK (034730)", "우리금융지주 (316140)", 
-        "크래프톤 (259960)", "삼성화재 (000810)", "한국전력 (015760)", "기업은행 (024110)", "HD한국조선해양 (009540)", 
-        "KT&G (033780)", "삼성에스디에스 (018260)", "에코프로머티 (450080)", "SK스퀘어 (402340)", "한화에어로스페이스 (012450)", 
-        "SK이노베이션 (096770)", "SK텔레콤 (017670)", "포스코퓨처엠 (003670)", "KT (030200)", "현대글로비스 (086280)", 
-        "삼성전기 (009150)", "에코프로비엠 (247540)", "알테오젠 (196170)", "에코프로 (086520)", "HLB (028300)", 
-        "엔켐 (348370)", "리가켐바이오 (141080)", "삼천당제약 (000250)", "리노공업 (058470)", "휴젤 (145020)", 
-        "클래시스 (214150)", "HPSP (403870)", "엔씨소프트 (036570)", "두산에너빌리티 (034020)", "두산로보틱스 (454910)",
-        "카카오뱅크 (323410)", "카카오페이 (377300)", "하이브 (352820)", "대한항공 (003490)", "한미반도체 (042700)",
-        "아모레퍼시픽 (090430)", "LG생활건강 (051900)", "SK바이오팜 (326030)", "SK바이오사이언스 (302440)"
+        "하나금융지주 (086790)", "삼성SDI (006400)", "카카오 (035720)", "메리츠금융지주 (138040)", "삼성생명 (032830)"
     ]
     
-    # 3. 만약 혹시라도 통신이 성공한다면 2천여 개 전체 리스트를 병합 (실패해도 앱은 죽지 않음)
     krx_list = []
     try:
-        krx_df = fdr.StockListing('KRX')
+        krx_df = load_krx_data()
         krx_list = [f"{row['Name']} ({row['Code']})" for _, row in krx_df.iterrows()]
     except:
         pass
         
-    # 하드코딩 리스트와 통신 성공 리스트를 합친 뒤 중복 제거
     final_list = global_list + korean_hardcoded + krx_list
     unique_list = list(dict.fromkeys(final_list))
-    
     return unique_list
 
 @st.cache_resource
@@ -140,27 +145,18 @@ def get_fear_and_greed_index():
 
 @st.cache_data(ttl=86400)
 def get_etf_list():
-    # ETF도 마찬가지로 통신 에러를 대비하여 인기 ETF들을 하드코딩
     fallback_etf = pd.DataFrame([
         {'Symbol': '069500', 'Name': 'KODEX 200', 'Price': 35000},
         {'Symbol': '360750', 'Name': 'TIGER 미국S&P500', 'Price': 15000},
         {'Symbol': '133690', 'Name': 'TIGER 미국나스닥100', 'Price': 80000},
         {'Symbol': '305540', 'Name': 'TIGER 2차전지테마', 'Price': 20000},
         {'Symbol': '091160', 'Name': 'KODEX 반도체', 'Price': 30000},
-        {'Symbol': '460330', 'Name': 'KODEX CD금리액티브(합성)', 'Price': 1000000},
-        {'Symbol': '379800', 'Name': 'KODEX 미국S&P500TR', 'Price': 15000},
-        {'Symbol': '411420', 'Name': 'KODEX 미국배당프리미엄액티브', 'Price': 10000},
-        {'Symbol': '102110', 'Name': 'TIGER 200', 'Price': 35000},
-        {'Symbol': '314250', 'Name': 'KODEX 미국나스닥100TR', 'Price': 15000},
     ])
-    
     try:
         etf_df = fdr.StockListing('ETF/KR')
-        if not etf_df.empty:
-            return etf_df.head(100)
+        if not etf_df.empty: return etf_df.head(100)
     except:
         pass
-    
     return fallback_etf
 
 
@@ -231,24 +227,30 @@ def run_dashboard(ticker_code, company_display_name):
     else:
         price_fmt = f"{currency}{current_price:,.2f}"
     
+    # ★ 시가총액 완벽 추출 로직 (야후 파이낸스 우선 -> KRX 대체) ★
     mkt_cap_str = "N/A"
+    
     try:
-        # 안전한 시총 가져오기
-        krx_df = fdr.StockListing('KRX')
-        if not krx_df.empty and is_korean:
-            code_only = ticker_code.split('.')[0]
-            match = krx_df[krx_df['Code'] == code_only]
-            if not match.empty:
-                mkt_cap = float(match.iloc[0].get('Marcap', 0))
-                if mkt_cap > 0:
-                    mkt_cap_str = f"{mkt_cap / 1_000_000_000_000:.2f}조 원"
+        # 1순위: YFinance에서 직접 가져오기 (가장 정확함)
+        mkt_cap = info.get('marketCap', 0)
+        if mkt_cap and mkt_cap > 0:
+            if is_korean:
+                mkt_cap_str = f"{mkt_cap / 1_000_000_000_000:.2f}조 원"
+            else:
+                mkt_cap_str = f"${mkt_cap / 1_000_000_000:.2f}B"
+        else:
+            # 2순위: 야후 파이낸스가 0으로 주면 KRX 데이터에서 다시 찾기
+            if is_korean:
+                krx_df = load_krx_data()
+                if not krx_df.empty:
+                    code_only = ticker_code.split('.')[0]
+                    match = krx_df[krx_df['Code'] == code_only]
+                    if not match.empty:
+                        m_val = float(match.iloc[0].get('Marcap', 0))
+                        if m_val > 0:
+                            mkt_cap_str = f"{m_val / 1_000_000_000_000:.2f}조 원"
     except:
         pass
-        
-    if mkt_cap_str == "N/A" and not is_korean:
-        mkt_cap = info.get('marketCap', 0)
-        if mkt_cap: 
-            mkt_cap_str = f"${mkt_cap / 1_000_000_000:.2f}B"
 
     last_252_days = df.tail(252)
     high52_val = float(last_252_days['High'].max())
@@ -266,8 +268,10 @@ def run_dashboard(ticker_code, company_display_name):
         
     latest_rsi = df['RSI'].iloc[-1]
     rsi_status = "과매수 ⚠️" if latest_rsi >= 70 else "과매도 📉" if latest_rsi <= 30 else "중립"
+    trend_status = "상승세" if current_price > df['MA20'].iloc[-1] else "하락세"
+    macd_status = "매수세가 유입" if df['MACD'].iloc[-1] > df['Signal'].iloc[-1] else "매수 심리가 다소 위축"
 
-    st.success(f"🔍 **{company_display_name}** ({ticker_code}) 개별 분석 완료")
+    st.success(f"🔍 **{company_display_name}** ({ticker_code}) 종목 분석 완료")
     
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("현재 주가", price_fmt)
@@ -276,62 +280,83 @@ def run_dashboard(ticker_code, company_display_name):
     c4.metric("52주 최저", low52)
     c5.metric("RSI (과열도)", f"{latest_rsi:.1f}", rsi_status)
     
-    trend_status = "상승세" if current_price > df['MA20'].iloc[-1] else "하락세"
-    macd_status = "매수세가 유입" if df['MACD'].iloc[-1] > df['Signal'].iloc[-1] else "매수 심리가 다소 위축"
+    # ★ 신규: 뉴스 실시간 크롤링 & AI 감성 분석 (최상단 브리핑용) ★
+    articles = []
+    pos_arts, neg_arts, neu_arts = [], [], []
     
-    if latest_rsi >= 70:
-        ai_comment = f"현재 주가는 20일선 기준 **{trend_status}**이지만, 지표상 **단기 과열(과매수)** 구간입니다. 신규 매수보다는 관망이나 분할 매도를 고려해볼 수 있는 시점입니다."
-    elif latest_rsi <= 30:
-        ai_comment = f"현재 낙폭이 과대하여(과매도) **바닥권 반등**을 기대해볼 수 있는 구간입니다. {macd_status}되는지 관찰하며 분할 매수를 검토하기 좋습니다."
-    else:
-        ai_comment = f"현재 주가는 **{trend_status}**에 있으며, {macd_status}되는 무난한 흐름을 보이고 있습니다. 무리한 단타보다는 시장 추세를 따라가는 것이 좋습니다."
+    try:
+        enc_query = urllib.parse.quote(company_display_name)
+        news_url = f"https://news.google.com/rss/search?q={enc_query}&hl=ko&gl=KR&ceid=KR:ko"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        res = requests.get(news_url, headers=headers, timeout=5)
+        root = ET.fromstring(res.content)
         
-    st.info(f"🤖 **AI 한 줄 평:** {ai_comment}")
+        for item in root.findall('.//item')[:10]:
+            t_tag = item.find('title')
+            l_tag = item.find('link')
+            if t_tag is not None and l_tag is not None:
+                articles.append({'title': t_tag.text.split(' - ')[0], 'link': l_tag.text})
+                
+        if articles:
+            ai_model = load_korean_ai()
+            for art in articles:
+                res_label = ai_model(art['title'])[0]['label'].upper()
+                art['sentiment'] = res_label
+                if res_label == "POSITIVE": pos_arts.append(art['title'])
+                elif res_label == "NEGATIVE": neg_arts.append(art['title'])
+                else: neu_arts.append(art['title'])
+    except:
+        pass
+
+    # [하루 요약 텍스트 생성]
+    if articles:
+        pos_ratio = len(pos_arts) / len(articles) * 100
+        neg_ratio = len(neg_arts) / len(articles) * 100
+        
+        if pos_ratio > neg_ratio and pos_arts:
+            news_trend = f"오늘 쏟아진 최신 기사 중 **긍정적 반응이 {pos_ratio:.0f}%**로 호재가 더 주목받았습니다. (가장 주목받은 이슈: *'{pos_arts[0]}'*)"
+        elif neg_ratio > pos_ratio and neg_arts:
+            news_trend = f"오늘 쏟아진 최신 기사 중 **부정적 반응이 {neg_ratio:.0f}%**로 악재성 이슈가 우세했습니다. (가장 주목받은 이슈: *'{neg_arts[0]}'*)"
+        else:
+            news_trend = "현재 뚜렷한 호재나 악재 없이 **중립적인 뉴스 흐름**을 보이고 있어 관망세가 짙습니다."
+    else:
+        news_trend = "오늘 날짜로 갱신된 주요 뉴스 이슈가 부족하여 뉴스 요약이 제한적입니다."
+
+    # [내일의 주가 전망 텍스트 생성]
+    if up_prob >= 60:
+        ml_pred = f"상승 예측 확률이 **{up_prob:.1f}%**로 매우 높게 나타났습니다. 머신러닝 패턴상 내일 **강한 상승 모멘텀**이 기대됩니다."
+    elif up_prob >= 50:
+        ml_pred = f"상승 예측 확률이 **{up_prob:.1f}%**로 집계되었습니다. 뚜렷한 급등보다는 **소폭 상승 및 보합권 횡보**가 예상됩니다."
+    elif up_prob >= 40:
+        ml_pred = f"하락 예측 확률이 **{100-up_prob:.1f}%**로 조금 더 높습니다. 내일은 **단기적인 하락이나 지지선 테스트**에 주의해야 합니다."
+    else:
+        ml_pred = f"하락 예측 확률이 **{100-up_prob:.1f}%**로 높게 분석되었습니다. 내일은 **하락 리스크가 크므로 보수적인 접근**을 권장합니다."
+
+    # [브리핑 UI 출력]
+    st.markdown("### 🤖 AI 데일리 종합 브리핑")
+    with st.container(border=True):
+        st.markdown(f"**📰 오늘의 하루 요약:** {news_trend}")
+        st.markdown(f"**🔮 내일의 주가 전망:** 과거 2년 치 패턴을 학습한 AI 결과, {ml_pred} 기술적 지표상으로도 현재 주가는 20일선 기준 **{trend_status}**이며, {macd_status}되고 있습니다.")
     st.divider()
 
     chart_config = {'displayModeBar': False, 'scrollZoom': False}
 
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-        "📊 차트 & 뉴스", "🏢 재무제표", "📈 시장 비교", "🧪 백테스트", "🚀 AI 스캐너", "🛒 ETF 탐색기"
+        "📊 차트 & 뉴스 상세", "🏢 재무제표", "📈 시장 비교", "🧪 백테스트", "🚀 AI 스캐너", "🛒 ETF 탐색기"
     ])
 
     with tab1:
         col1, col2 = st.columns([1.1, 2.3])
         with col1:
-            st.subheader("💡 AI 예측 & 백테스트 검증")
+            st.subheader("💡 AI 백테스트 신뢰도")
             if test_acc > 0: 
-                st.info(f"🧪 **과거 20% 백테스트 적중률**: **{test_acc:.1f}%**")
-            if up_prob > 50: 
-                st.success(f"📈 **내일 상승 예상 확률**: **{up_prob:.1f}%**")
-            else: 
-                st.error(f"📉 **내일 하락 예상 확률**: **{100-up_prob:.1f}%**")
-            
-            st.subheader("📰 실시간 뉴스 분석 (한국어 AI)")
-            try:
-                enc_query = urllib.parse.quote(company_display_name)
-                news_url = f"https://news.google.com/rss/search?q={enc_query}&hl=ko&gl=KR&ceid=KR:ko"
-                headers = {'User-Agent': 'Mozilla/5.0'}
-                res = requests.get(news_url, headers=headers, timeout=5)
-                root = ET.fromstring(res.content)
+                st.info(f"🧪 **과거 데이터 기반 AI 적중률**: **{test_acc:.1f}%**")
                 
-                articles = []
-                for item in root.findall('.//item')[:10]:
-                    title_tag = item.find('title')
-                    link_tag = item.find('link')
-                    if title_tag is not None and link_tag is not None:
-                        articles.append({
-                            'title': title_tag.text.split(' - ')[0], 
-                            'link': link_tag.text
-                        })
-            except:
-                articles = []
-            
+            st.subheader("📰 실시간 뉴스 원문 (감성분석)")
             if articles:
-                ai_model = load_korean_ai()
                 with st.container(height=350, border=True):
                     for art in articles:
-                        res = ai_model(art['title'])[0]['label'].upper()
-                        icon = "📈 [호재]" if res == "POSITIVE" else "📉 [악재]" if res == "NEGATIVE" else "➖ [중립]"
+                        icon = "📈 [호재]" if art['sentiment'] == "POSITIVE" else "📉 [악재]" if art['sentiment'] == "NEGATIVE" else "➖ [중립]"
                         st.markdown(f"{icon} [{art['title']}]({art['link']})")
             else: 
                 st.info("뉴스를 일시적으로 불러오지 못했습니다.")
@@ -473,7 +498,7 @@ def run_dashboard(ticker_code, company_display_name):
         st.subheader("🚀 시가총액 TOP 100 & 내일의 급등주 AI 스캐너")
         
         try:
-            krx_df = fdr.StockListing('KRX')
+            krx_df = load_krx_data()
             has_marcap = 'Marcap' in krx_df.columns and pd.to_numeric(krx_df['Marcap'], errors='coerce').sum() > 0
             
             if not krx_df.empty and has_marcap:
@@ -620,7 +645,6 @@ def run_dashboard(ticker_code, company_display_name):
 # --- [3. 메인 화면 레이아웃 (종목 검색 & 홈)] ---
 stock_options = get_stock_list()
 
-# 검색창 상단 여백 제거를 위해 columns 활용
 col_search1, col_search2 = st.columns([1, 0.01])
 with col_search1:
     selected_stock = st.selectbox(
@@ -689,14 +713,12 @@ if not selected_stock:
             st.markdown(f"<h4 style='text-align: center; color: {fgi_color};'>{fgi_text}</h4>", unsafe_allow_html=True)
 
 else:
-    # 괄호 안의 종목코드만 정확히 추출하는 안전한 파싱 로직
     company_name = selected_stock.split(" (")[0]
     stock_code = selected_stock.split(" (")[-1].replace(")", "")
     
     if stock_code.isalpha():
         final_ticker = stock_code
     else:
-        # 야후 파이낸스 조회를 위해 .KS를 기본으로 붙임 (FDR 서버 다운 대비)
         final_ticker = f"{stock_code}.KS"
         try:
             krx_df = load_krx_data()
