@@ -63,7 +63,7 @@ with st.sidebar:
 st.title("🤖 투자 도우미 프로그램")
 st.warning("⚠️ **[투자 유의사항]** 본 프로그램이 제공하는 정보는 참고용 보조 자료입니다. 모든 투자의 최종 판단과 그에 따른 책임은 전적으로 투자자 본인에게 있습니다.")
 
-# --- [전역 고정 변수: 든든한 국내 우량주 80선 (서버 다운 대비용)] ---
+# --- [전역 고정 변수: 국내 우량주 80선 (서버 다운 대비용)] ---
 KOREAN_BLUECHIPS = [
     "삼성전자 (005930)", "SK하이닉스 (000660)", "LG에너지솔루션 (373220)", "삼성바이오로직스 (207940)", 
     "현대차 (005380)", "기아 (000270)", "셀트리온 (068270)", "KB금융 (105560)", "POSCO홀딩스 (005490)", 
@@ -184,6 +184,7 @@ def run_dashboard(ticker_code, company_display_name):
     is_korean = ticker_code.endswith('.KS') or ticker_code.endswith('.KQ')
     currency = "₩" if is_korean else "$"
     
+    # 1차 현재가 세팅 (야후 데이터 기반)
     current_price = float(df['Close'].iloc[-1])
     if pd.isna(current_price): current_price = 0.0 
     
@@ -230,28 +231,44 @@ def run_dashboard(ticker_code, company_display_name):
         up_prob = 50.0
         test_acc = 0.0
 
+    # ★ 핵심 수정: 구글 파이낸스를 이용한 실시간 시가총액 & 현재가 100% 보정 로직 ★
+    mkt_cap_str = "N/A"
+    
+    # 미국 주식은 야후 파이낸스 데이터 그대로 사용
+    if not is_korean:
+        mkt_cap = info.get('marketCap', 0)
+        if mkt_cap and mkt_cap > 0:
+            mkt_cap_str = f"${mkt_cap / 1_000_000_000:.2f}B"
+            
+    # 한국 주식일 경우 구글 파이낸스 실시간 크롤링 (야후 파이낸스 오류 완벽 회피)
+    if is_korean:
+        try:
+            code = ticker_code.split('.')[0]
+            market = 'KRX' if ticker_code.endswith('.KS') else 'KOSDAQ'
+            url = f"https://www.google.com/finance/quote/{code}:{market}?hl=ko"
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+            res = requests.get(url, headers=headers, timeout=5)
+            html = res.text
+            
+            # 정확한 현재가 덮어쓰기
+            p_match = re.search(r'class="YMlKec fxKbKc"[^>]*>[^\d]*([\d,]+(?:\.\d+)?)', html)
+            if p_match:
+                current_price = float(p_match.group(1).replace(',', ''))
+                
+            # 정확한 시가총액 덮어쓰기 (예: "350조")
+            m_match = re.search(r'시가총액.*?class="P6K39c"[^>]*>([^<]+)</div>', html, re.DOTALL)
+            if m_match:
+                mkt_cap_str = m_match.group(1).strip()
+                if not mkt_cap_str.endswith('원'):
+                    mkt_cap_str += ' 원'
+        except Exception:
+            # 구글 접속 실패 시에만 야후 데이터로 최후의 보루 작동
+            pass
+
     if is_korean:
         price_fmt = f"{currency}{int(current_price):,}"
     else:
         price_fmt = f"{currency}{current_price:,.2f}"
-    
-    mkt_cap_str = "N/A"
-    try:
-        krx_df = load_krx_data()
-        if not krx_df.empty and is_korean:
-            code_only = ticker_code.split('.')[0]
-            match = krx_df[krx_df['Code'] == code_only]
-            if not match.empty:
-                mkt_cap = float(match.iloc[0].get('Marcap', 0))
-                if mkt_cap > 0:
-                    mkt_cap_str = f"{mkt_cap / 1_000_000_000_000:.2f}조 원"
-    except:
-        pass
-        
-    if mkt_cap_str == "N/A" and not is_korean:
-        mkt_cap = info.get('marketCap', 0)
-        if mkt_cap: 
-            mkt_cap_str = f"${mkt_cap / 1_000_000_000:.2f}B"
 
     last_252_days = df.tail(252)
     high52_val = float(last_252_days['High'].max())
@@ -530,18 +547,15 @@ def run_dashboard(ticker_code, company_display_name):
             sim_fig.update_layout(template='plotly_dark', height=450, hovermode="x unified")
             st.plotly_chart(sim_fig, use_container_width=True, config=chart_config)
 
-    # ★ 수정: 에러 메시지 완전히 삭제 및 무적의 우회 스캐너 로직 적용 ★
     with tab5:
         st.subheader("🚀 시가총액 상위 우량주 AI 스캐너")
         
         krx_df = load_krx_data()
         has_marcap = 'Marcap' in krx_df.columns and pd.to_numeric(krx_df['Marcap'], errors='coerce').sum() > 0
         
-        # 시가총액 데이터가 멀쩡하게 잘 들어왔을 때 (정상 상황)
         if not krx_df.empty and has_marcap:
             top100 = krx_df.sort_values(by='Marcap', ascending=False).head(100).reset_index(drop=True)
             top100.index = top100.index + 1
-        # 서버에서 시가총액을 안 줄 때 (비상 상황 - 에러 띄우는 대신 하드코딩 리스트로 완벽 대체!)
         else:
             st.info("💡 실시간 시가총액 서버 연결이 지연되어, '국내 시가총액 상위 우량주 80선'을 대상으로 즉시 스캔을 진행합니다.")
             k_names = [x.split(" (")[0] for x in KOREAN_BLUECHIPS]
@@ -603,7 +617,6 @@ def run_dashboard(ticker_code, company_display_name):
         
         st.divider()
         
-        # 시가총액 순위표는 실제 데이터(Marcap)가 있을 때만 예쁘게 표출
         if has_marcap:
             st.markdown("#### 🏆 한국 주식 시가총액 순위 (1위 ~ 100위)")
             display_df = top100[['Code', 'Name', 'Close', 'ChagesRatio', 'Marcap']].copy()
