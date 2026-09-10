@@ -1,5 +1,6 @@
 import os
 import re
+import io
 try:
     import FinanceDataReader as fdr
 except ImportError:
@@ -62,32 +63,36 @@ with st.sidebar:
 st.title("🤖 투자 도우미 프로그램")
 st.warning("⚠️ **[투자 유의사항]** 본 프로그램이 제공하는 정보는 참고용 보조 자료입니다. 모든 투자의 최종 판단과 그에 따른 책임은 전적으로 투자자 본인에게 있습니다.")
 
-# --- [1. 공통 데이터 엔진] ---
-@st.cache_data(ttl=3600)
+# --- [1. 공통 데이터 엔진 (2500개 전체 주식 복구 및 차단 우회)] ---
+@st.cache_data(ttl=86400)
 def load_krx_data():
+    # 1. 봇 차단을 피하기 위한 강력한 사람 위장(User-Agent) 헤더 적용
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    }
     try:
-        df = fdr.StockListing('KRX')
-        if not df.empty: return df
-    except Exception:
-        pass
+        # 한국거래소(KIND) 직접 접속 및 크롤링
+        kospi_res = requests.get('http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13&marketType=stockMkt', headers=headers, timeout=10)
+        kosdaq_res = requests.get('http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13&marketType=kosdaqMkt', headers=headers, timeout=10)
         
-    try:
-        kospi_url = 'http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13&marketType=stockMkt'
-        kosdaq_url = 'http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13&marketType=kosdaqMkt'
+        kospi_df = pd.read_html(io.StringIO(kospi_res.text), header=0)[0]
+        kospi_df['Market'] = 'KOSPI'
+        kosdaq_df = pd.read_html(io.StringIO(kosdaq_res.text), header=0)[0]
+        kosdaq_df['Market'] = 'KOSDAQ'
         
-        kospi = pd.read_html(kospi_url, header=0)[0]
-        kospi['Market'] = 'KOSPI'
-        kosdaq = pd.read_html(kosdaq_url, header=0)[0]
-        kosdaq['Market'] = 'KOSDAQ'
-        
-        df = pd.concat([kospi, kosdaq], ignore_index=True)
+        df = pd.concat([kospi_df, kosdaq_df], ignore_index=True)
         df = df[['회사명', '종목코드', '업종', 'Market']].rename(columns={'회사명': 'Name', '종목코드': 'Code', '업종': 'Sector'})
         df['Code'] = df['Code'].astype(str).str.zfill(6)
         df['Marcap'] = 0
         df['ChagesRatio'] = 0.0
         return df
     except Exception:
-        return pd.DataFrame()
+        # 2. KIND 접속 실패 시 파이낸스데이터리더(FDR)로 2차 시도
+        try:
+            df = fdr.StockListing('KRX')
+            return df
+        except:
+            return pd.DataFrame()
 
 @st.cache_data(ttl=86400)
 def get_stock_list():
@@ -97,21 +102,12 @@ def get_stock_list():
         "일라이 릴리 (LLY)", "JP모건 (JPM)", "버크셔 해서웨이 (BRK-B)", "코인베이스 (COIN)"
     ]
     
-    korean_hardcoded = [
-        "삼성전자 (005930)", "SK하이닉스 (000660)", "LG에너지솔루션 (373220)", "삼성바이오로직스 (207940)", 
-        "현대차 (005380)", "기아 (000270)", "셀트리온 (068270)", "KB금융 (105560)", "POSCO홀딩스 (005490)", 
-        "신한지주 (055550)", "NAVER (035420)", "삼성물산 (028260)", "LG화학 (051910)", "현대모비스 (012330)", 
-        "하나금융지주 (086790)", "삼성SDI (006400)", "카카오 (035720)", "메리츠금융지주 (138040)", "삼성생명 (032830)"
-    ]
-    
     krx_list = []
-    try:
-        krx_df = load_krx_data()
+    krx_df = load_krx_data()
+    if not krx_df.empty:
         krx_list = [f"{row['Name']} ({row['Code']})" for _, row in krx_df.iterrows()]
-    except:
-        pass
         
-    final_list = global_list + korean_hardcoded + krx_list
+    final_list = global_list + krx_list
     unique_list = list(dict.fromkeys(final_list))
     return unique_list
 
@@ -227,30 +223,23 @@ def run_dashboard(ticker_code, company_display_name):
     else:
         price_fmt = f"{currency}{current_price:,.2f}"
     
-    # ★ 시가총액 완벽 추출 로직 (야후 파이낸스 우선 -> KRX 대체) ★
     mkt_cap_str = "N/A"
-    
     try:
-        # 1순위: YFinance에서 직접 가져오기 (가장 정확함)
-        mkt_cap = info.get('marketCap', 0)
-        if mkt_cap and mkt_cap > 0:
-            if is_korean:
-                mkt_cap_str = f"{mkt_cap / 1_000_000_000_000:.2f}조 원"
-            else:
-                mkt_cap_str = f"${mkt_cap / 1_000_000_000:.2f}B"
-        else:
-            # 2순위: 야후 파이낸스가 0으로 주면 KRX 데이터에서 다시 찾기
-            if is_korean:
-                krx_df = load_krx_data()
-                if not krx_df.empty:
-                    code_only = ticker_code.split('.')[0]
-                    match = krx_df[krx_df['Code'] == code_only]
-                    if not match.empty:
-                        m_val = float(match.iloc[0].get('Marcap', 0))
-                        if m_val > 0:
-                            mkt_cap_str = f"{m_val / 1_000_000_000_000:.2f}조 원"
+        krx_df = load_krx_data()
+        if not krx_df.empty and is_korean:
+            code_only = ticker_code.split('.')[0]
+            match = krx_df[krx_df['Code'] == code_only]
+            if not match.empty:
+                mkt_cap = float(match.iloc[0].get('Marcap', 0))
+                if mkt_cap > 0:
+                    mkt_cap_str = f"{mkt_cap / 1_000_000_000_000:.2f}조 원"
     except:
         pass
+        
+    if mkt_cap_str == "N/A" and not is_korean:
+        mkt_cap = info.get('marketCap', 0)
+        if mkt_cap: 
+            mkt_cap_str = f"${mkt_cap / 1_000_000_000:.2f}B"
 
     last_252_days = df.tail(252)
     high52_val = float(last_252_days['High'].max())
@@ -268,8 +257,8 @@ def run_dashboard(ticker_code, company_display_name):
         
     latest_rsi = df['RSI'].iloc[-1]
     rsi_status = "과매수 ⚠️" if latest_rsi >= 70 else "과매도 📉" if latest_rsi <= 30 else "중립"
-    trend_status = "상승세" if current_price > df['MA20'].iloc[-1] else "하락세"
-    macd_status = "매수세가 유입" if df['MACD'].iloc[-1] > df['Signal'].iloc[-1] else "매수 심리가 다소 위축"
+    trend_status = "상승세 📈" if current_price > df['MA20'].iloc[-1] else "하락세 📉"
+    macd_status = "매수세 유입(골든크로스)" if df['MACD'].iloc[-1] > df['Signal'].iloc[-1] else "매도세 우위(데드크로스)"
 
     st.success(f"🔍 **{company_display_name}** ({ticker_code}) 종목 분석 완료")
     
@@ -280,7 +269,7 @@ def run_dashboard(ticker_code, company_display_name):
     c4.metric("52주 최저", low52)
     c5.metric("RSI (과열도)", f"{latest_rsi:.1f}", rsi_status)
     
-    # ★ 신규: 뉴스 실시간 크롤링 & AI 감성 분석 (최상단 브리핑용) ★
+    # ★ 신규 기능 1: 실시간 뉴스 크롤링 및 감성 분석 ★
     articles = []
     pos_arts, neg_arts, neu_arts = [], [], []
     
@@ -308,21 +297,30 @@ def run_dashboard(ticker_code, company_display_name):
     except:
         pass
 
-    # [하루 요약 텍스트 생성]
+    # --- [상세 브리핑 문구 생성기] ---
+    
+    # 1. 하루 요약 텍스트
     if articles:
         pos_ratio = len(pos_arts) / len(articles) * 100
         neg_ratio = len(neg_arts) / len(articles) * 100
         
         if pos_ratio > neg_ratio and pos_arts:
-            news_trend = f"오늘 쏟아진 최신 기사 중 **긍정적 반응이 {pos_ratio:.0f}%**로 호재가 더 주목받았습니다. (가장 주목받은 이슈: *'{pos_arts[0]}'*)"
+            news_trend = f"오늘 수집된 최신 기사 중 **긍정적 반응이 {pos_ratio:.0f}%**로 시장에서 '호재'가 더 강하게 부각되고 있습니다."
         elif neg_ratio > pos_ratio and neg_arts:
-            news_trend = f"오늘 쏟아진 최신 기사 중 **부정적 반응이 {neg_ratio:.0f}%**로 악재성 이슈가 우세했습니다. (가장 주목받은 이슈: *'{neg_arts[0]}'*)"
+            news_trend = f"오늘 수집된 최신 기사 중 **부정적 반응이 {neg_ratio:.0f}%**로 시장에서 '악재' 우려가 더 큰 상황입니다."
         else:
-            news_trend = "현재 뚜렷한 호재나 악재 없이 **중립적인 뉴스 흐름**을 보이고 있어 관망세가 짙습니다."
+            news_trend = "현재 뚜렷한 초대형 호재나 악재 없이 **중립적인 뉴스 흐름**을 보이며 관망세가 짙습니다."
+            
+        news_details_list = []
+        for i, art in enumerate(articles[:3]):
+            icon = "🟢" if art['sentiment'] == "POSITIVE" else "🔴" if art['sentiment'] == "NEGATIVE" else "⚪"
+            news_details_list.append(f"{icon} {art['title']}")
+        news_details = "<br>".join(news_details_list)
     else:
         news_trend = "오늘 날짜로 갱신된 주요 뉴스 이슈가 부족하여 뉴스 요약이 제한적입니다."
+        news_details = "수집된 최신 기사가 없습니다."
 
-    # [내일의 주가 전망 텍스트 생성]
+    # 2. 내일의 주가 전망 텍스트
     if up_prob >= 60:
         ml_pred = f"상승 예측 확률이 **{up_prob:.1f}%**로 매우 높게 나타났습니다. 머신러닝 패턴상 내일 **강한 상승 모멘텀**이 기대됩니다."
     elif up_prob >= 50:
@@ -331,18 +329,50 @@ def run_dashboard(ticker_code, company_display_name):
         ml_pred = f"하락 예측 확률이 **{100-up_prob:.1f}%**로 조금 더 높습니다. 내일은 **단기적인 하락이나 지지선 테스트**에 주의해야 합니다."
     else:
         ml_pred = f"하락 예측 확률이 **{100-up_prob:.1f}%**로 높게 분석되었습니다. 내일은 **하락 리스크가 크므로 보수적인 접근**을 권장합니다."
+        
+    # 3. 상세 기술적 지표 문구
+    vol_chg = df['Volume_Change'].iloc[-1]
+    if pd.isna(vol_chg): vol_chg = 0
+    vol_status = "급격히 증가하며 시장의 관심이 쏠리고" if vol_chg > 0.5 else "다소 감소하며 눈치 보기 장세가 이어지고" if vol_chg < -0.3 else "평이한 수준을 유지하고"
+    
+    bb_upper = df['Upper_Band'].iloc[-1]
+    bb_lower = df['Lower_Band'].iloc[-1]
+    if current_price > bb_upper:
+        bb_status = "볼린저 밴드 상단을 돌파하며 **단기 과열 상태**를 보이고 있습니다."
+    elif current_price < bb_lower:
+        bb_status = "볼린저 밴드 하단을 이탈하여 **단기 바닥/과매도 구간**에 진입했습니다."
+    else:
+        bb_status = "볼린저 밴드 내에서 **안정적인 궤도**를 그리고 있습니다."
 
-    # [브리핑 UI 출력]
+    # --- [UI 출력: AI 데일리 브리핑] ---
     st.markdown("### 🤖 AI 데일리 종합 브리핑")
-    with st.container(border=True):
-        st.markdown(f"**📰 오늘의 하루 요약:** {news_trend}")
-        st.markdown(f"**🔮 내일의 주가 전망:** 과거 2년 치 패턴을 학습한 AI 결과, {ml_pred} 기술적 지표상으로도 현재 주가는 20일선 기준 **{trend_status}**이며, {macd_status}되고 있습니다.")
+    
+    col_b1, col_b2 = st.columns(2)
+    with col_b1:
+        with st.container(border=True, height=230):
+            st.markdown("#### 📰 오늘 뉴스 기반 하루 요약")
+            st.markdown(news_trend)
+            st.markdown("**[가장 많이 언급된 뉴스 Top 3]**")
+            st.markdown(f"<div style='font-size: 0.9em; color: #aaaaaa;'>{news_details}</div>", unsafe_allow_html=True)
+            
+    with col_b2:
+        with st.container(border=True, height=230):
+            st.markdown("#### 🔮 내일 주가 및 기술적 전망")
+            st.markdown(ml_pred)
+            st.markdown(
+                f"<div style='font-size: 0.9em; color: #aaaaaa; margin-top: 10px;'>"
+                f"- <b>추세/거래량:</b> 현재 주가는 20일선 기준 <b>{trend_status}</b>이며, 전일 대비 거래량은 <b>{vol_status}</b> 있습니다.<br>"
+                f"- <b>보조지표:</b> MACD 지표상 <b>{macd_status}</b> 중이며, {bb_status}"
+                f"</div>", 
+                unsafe_allow_html=True
+            )
+            
     st.divider()
 
     chart_config = {'displayModeBar': False, 'scrollZoom': False}
 
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-        "📊 차트 & 뉴스 상세", "🏢 재무제표", "📈 시장 비교", "🧪 백테스트", "🚀 AI 스캐너", "🛒 ETF 탐색기"
+        "📊 차트 & 뉴스 원문", "🏢 재무제표", "📈 시장 비교", "🧪 백테스트", "🚀 AI 스캐너", "🛒 ETF 탐색기"
     ])
 
     with tab1:
@@ -352,11 +382,11 @@ def run_dashboard(ticker_code, company_display_name):
             if test_acc > 0: 
                 st.info(f"🧪 **과거 데이터 기반 AI 적중률**: **{test_acc:.1f}%**")
                 
-            st.subheader("📰 실시간 뉴스 원문 (감성분석)")
+            st.subheader("📰 실시간 뉴스 원문 목록")
             if articles:
-                with st.container(height=350, border=True):
+                with st.container(height=420, border=True):
                     for art in articles:
-                        icon = "📈 [호재]" if art['sentiment'] == "POSITIVE" else "📉 [악재]" if art['sentiment'] == "NEGATIVE" else "➖ [중립]"
+                        icon = "🟢" if art['sentiment'] == "POSITIVE" else "🔴" if art['sentiment'] == "NEGATIVE" else "⚪"
                         st.markdown(f"{icon} [{art['title']}]({art['link']})")
             else: 
                 st.info("뉴스를 일시적으로 불러오지 못했습니다.")
